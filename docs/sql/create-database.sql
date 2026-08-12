@@ -8,6 +8,13 @@
    Run it in SSMS against AZUSCCM01 as an account with sysadmin or dbcreator +
    securityadmin. Every step is guarded, so re-running is safe.
 
+   THEN RUN grant-access.sql for the account that will actually run the app.
+   With Windows authentication the connection is made by whichever account the
+   process runs as — your own login when you launch update-and-run.cmd by hand,
+   the service account once it runs under NSSM. Creating svc_backupdash here
+   grants nothing to either of those. Skipping that step is what produces
+   "Login failed ... Cannot open database" (18456 / 4060).
+
    You do NOT have to run the table section: the app calls create_all() at
    startup and will build the schema itself. Doing it here buys one thing —
    the app account then never needs DDL rights (see the note in section 4).
