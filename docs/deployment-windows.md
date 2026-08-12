@@ -30,18 +30,18 @@ cd ..\backend && python -m uvicorn app.main:app --port 8010
 ## Evaluating without credentials
 
 ```
-cd backend
-python -m app.cli seed-demo
+update-and-run.cmd demo
 ```
 
 ~49 fake servers with 75 nights of history, including UK servers on London time,
 two chronically failing jobs, a server that has never succeeded, and one whose
-job silently stopped six nights ago. Re-running replaces the demo estate rather
-than doubling it. Point `APP_DB_URL` at a throwaway SQLite file first:
+job silently stopped six nights ago.
 
-```
-set APP_DB_URL=sqlite:///./demo.db
-```
+The `demo` flag points the app at `backend\demo.db` via an environment variable,
+which overrides whatever `APP_DB_URL` says in `.env`. That separation is not
+cosmetic: `seed-demo` **replaces** the entire estate, so running it against a
+configured database would delete real collected history. Drop the flag to go
+back to the real one — nothing about it is sticky.
 
 ## The app database
 

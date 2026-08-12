@@ -65,7 +65,14 @@ cd ../backend
 APP_DB_URL=sqlite:///./demo.db python -m uvicorn app.main:app --port 8010
 ```
 
-Open <http://localhost:8010>. On Windows: `update-and-run.cmd`.
+Open <http://localhost:8010>. On Windows this is one command:
+
+```bat
+update-and-run.cmd demo
+```
+
+That pulls, installs, builds, seeds the demo estate into its own database, and
+launches. Drop `demo` once your real sources are configured.
 
 The demo estate is ~49 servers over 75 nights, shaped to exercise the cases that
 matter — UK servers on London time, two chronically failing jobs, a server that
