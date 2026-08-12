@@ -23,7 +23,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .config import get_settings
-from .models import LEGACY_SOURCE, BackupEvent, Server, ServerDay
+from .models import LEGACY_SOURCE, BackupEvent, Server, ServerDay, visible_servers
 from .outcomes import MISSED, PROTECTED_OUTCOMES, SUCCESS, severity, worst
 from .timeframes import current_report_date
 
@@ -48,7 +48,7 @@ def refresh_days(session: Session, dates: list[str]) -> int:
 
     servers = {
         s.id: s
-        for s in session.query(Server).filter(Server.hidden.is_(False)).all()
+        for s in session.query(Server).filter(visible_servers()).all()
     }
 
     # One pass over the window; everything below is in-memory grouping.

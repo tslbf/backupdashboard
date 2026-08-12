@@ -4,6 +4,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     JSON,
+    or_,
     BigInteger,
     Boolean,
     DateTime,
@@ -186,6 +187,26 @@ def seed_source_config(session) -> None:
                     sort_order=order,
                 )
             )
+
+
+def visible_servers():
+    """`servers.hidden` is false.
+
+    Written as a comparison rather than `Server.hidden.is_(False)` on purpose.
+    SQLAlchemy renders `.is_(False)` as `IS 0`, which SQLite happily accepts and
+    SQL Server rejects outright — its `IS` takes only NULL. That difference is
+    invisible in tests until the app meets a real SQL Server.
+
+    The NULL branch covers rows written before the column existed, which
+    `db._ensure_columns` adds as nullable.
+    """
+    return or_(Server.hidden.is_(None), Server.hidden == False)  # noqa: E712
+
+
+def expected_servers():
+    """`servers.expected` is true, same reasoning as above. NULL reads as
+    expected, matching the column default."""
+    return or_(Server.expected.is_(None), Server.expected == True)  # noqa: E712
 
 
 class CollectorRun(Base):

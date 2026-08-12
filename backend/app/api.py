@@ -12,7 +12,15 @@ from .collectors import ALL_COLLECTORS, run_collector
 from .config import get_settings
 from .db import get_session
 from .ingest import effective_cutoff, effective_timezone, restamp_server, timezone_origin
-from .models import BackupEvent, CollectorRun, Server, ServerDay, SourceConfig
+from .models import (
+    BackupEvent,
+    CollectorRun,
+    Server,
+    ServerDay,
+    SourceConfig,
+    expected_servers,
+    visible_servers,
+)
 from .outcomes import (
     ALL_OUTCOMES,
     FAILED,
@@ -184,7 +192,7 @@ def overview(
     rows = (
         session.query(ServerDay, Server)
         .join(Server, Server.id == ServerDay.server_id)
-        .filter(ServerDay.report_date.in_([day, previous]), Server.hidden.is_(False))
+        .filter(ServerDay.report_date.in_([day, previous]), visible_servers())
         .all()
     )
 
@@ -289,8 +297,8 @@ def _attention(session: Session, config, settings, day: str) -> dict:
     never = (
         session.query(Server)
         .filter(
-            Server.hidden.is_(False),
-            Server.expected.is_(True),
+            visible_servers(),
+            expected_servers(),
             Server.last_success_utc.is_(None),
             Server.last_event_utc.isnot(None),
             Server.last_event_utc >= horizon,
@@ -306,8 +314,8 @@ def _attention(session: Session, config, settings, day: str) -> dict:
     stale = (
         session.query(Server)
         .filter(
-            Server.hidden.is_(False),
-            Server.expected.is_(True),
+            visible_servers(),
+            expected_servers(),
             Server.last_success_utc.isnot(None),
             Server.last_success_utc < stale_cutoff,
         )
@@ -357,7 +365,7 @@ def trends(
         session.query(ServerDay.report_date, ServerDay.outcome, func.count(ServerDay.id))
         .join(Server, Server.id == ServerDay.server_id)
         .filter(
-            Server.hidden.is_(False),
+            visible_servers(),
             ServerDay.report_date >= start,
             ServerDay.report_date <= end.isoformat(),
         )
@@ -406,7 +414,7 @@ def duration_trend(
         session.query(ServerDay.report_date, ServerDay.duration_sec)
         .join(Server, Server.id == ServerDay.server_id)
         .filter(
-            Server.hidden.is_(False),
+            visible_servers(),
             ServerDay.duration_sec.isnot(None),
             ServerDay.report_date >= start,
             ServerDay.report_date <= end.isoformat(),
@@ -455,7 +463,7 @@ def list_servers(
 
     query = session.query(Server)
     if not include_hidden:
-        query = query.filter(Server.hidden.is_(False))
+        query = query.filter(visible_servers())
     servers = query.order_by(Server.name).all()
 
     rows = (
@@ -692,7 +700,7 @@ def day_detail(day: str, session: Session = Depends(get_session)):
     rows = (
         session.query(ServerDay, Server)
         .join(Server, Server.id == ServerDay.server_id)
-        .filter(ServerDay.report_date == day, Server.hidden.is_(False))
+        .filter(ServerDay.report_date == day, visible_servers())
         .all()
     )
     payload = []

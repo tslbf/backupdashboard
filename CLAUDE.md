@@ -94,6 +94,27 @@ public/lbf-mark.png  brand mark; sits on a light tile, never recoloured
 docs/             timezones.md, deployment-windows.md
 ```
 
+## SQLite is not SQL Server
+
+Dev runs on SQLite, production on SQL Server, and SQLite is permissive in ways
+that hide real errors until the app meets AZUSCCM01. One already shipped:
+`Server.hidden.is_(False)` compiles to `hidden IS 0`, which SQLite accepts and
+T-SQL rejects outright — its `IS` takes only NULL. Every page 500'd.
+
+- Use `models.visible_servers()` / `expected_servers()`, never `.is_(True/False)`
+  on a boolean column. `tests/test_sql_dialect.py` compiles the real query shapes
+  against the mssql dialect — no server needed — and an AST scan blocks the
+  pattern from coming back.
+- SQLite does not enforce foreign keys unless asked; SQL Server always does.
+  `tests/test_purge.py` turns enforcement on, and disposes the pool after
+  registering the pragma — pooled connections predate the listener otherwise and
+  the test passes vacuously.
+- SQL Server caps a statement at 2100 parameters, which is why `refresh_all`
+  chunks its date list rather than passing a year at once.
+
+The general rule: anything that touches the database is unproven until it has
+either run against SQL Server or been compiled against the mssql dialect.
+
 ## Outcome vocabulary
 
 Canonical: `success warning failed missed running unknown`. Severity order
