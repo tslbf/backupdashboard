@@ -29,6 +29,32 @@ class Collector(ABC):
         return getattr(settings, f"{self.source}_interval", 60)
 
 
+def close_orphaned_runs() -> int:
+    """Mark runs still claiming "running" as interrupted, at startup.
+
+    `run_collector` writes status="running" before it starts and overwrites it
+    at the end. If the process dies in between — Ctrl+C, a service restart, the
+    box rebooting — nothing ever rewrites that row, and the Collectors page shows
+    a collector as running indefinitely. Since a run cannot survive the process
+    that owns it, anything still "running" when we start up is by definition
+    finished, badly.
+    """
+    SessionLocal = session_factory()
+    with SessionLocal() as session:
+        stale = session.query(CollectorRun).filter(CollectorRun.status == "running").all()
+        for run in stale:
+            run.status = "error"
+            run.message = (
+                "Interrupted — the app restarted while this run was in progress, "
+                "so its outcome was never recorded."
+            )
+            run.finished_at = run.finished_at or utcnow()
+        session.commit()
+        if stale:
+            log.warning("marked %s interrupted collector run(s) from a previous process", len(stale))
+        return len(stale)
+
+
 def run_collector(collector: Collector) -> CollectorRun:
     """Execute one collector with its own DB session and a run-log row.
 
@@ -52,6 +78,7 @@ def run_collector(collector: Collector) -> CollectorRun:
         try:
             if not collector.is_configured(settings):
                 raise RuntimeError(f"{collector.display_name} is not configured (missing settings)")
+            log.info("%s: starting collection", collector.source)
             count = collector.collect(session, settings)
             run.status = "success"
             run.records = count
@@ -70,7 +97,9 @@ def run_collector(collector: Collector) -> CollectorRun:
 
         if run.status == "success":
             try:
+                log.info("%s: rebuilding recent nights", collector.source)
                 after_collection(session)
+                log.info("%s: done", collector.source)
             except Exception:  # noqa: BLE001
                 log.error("rollup after %s failed:\n%s", collector.source, traceback.format_exc())
         return run

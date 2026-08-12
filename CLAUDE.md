@@ -85,6 +85,7 @@ backend/app/
   api.py          every REST endpoint
   collectors/     one module per source; each fails independently
   demo_data.py    ~49 servers x 75 nights, shaped to exercise the edge cases
+  logbuffer.py    bounded in-memory log tail behind /api/logs
 frontend/src/
   api.ts          typed client
   components.tsx  status system, charts (DayColumns, DurationChart, HeatStrip), sort, sidebar
@@ -184,6 +185,15 @@ Backup-specific decisions on top of the theme:
   digits look loose at display sizes.
 - Times that could be misread across regions render as `11:01 PM → 04:01 London`
   (`.tz-pill.alt`). The arrow is what stops it reading as two separate times.
+- **The whole type scale is one block of token overrides** at the top of
+  `styles.css`. The vendored theme is dense by design (13px body, 10px labels),
+  which read too small at a desk; everything is one step up, ~+18%. Raise the
+  numbers there rather than hunting individual rules — every size derives from
+  them. Spacing was raised to match, or larger text in the same boxes reads
+  cramped.
+- `minmax()` cannot be nested inside `minmax()`. `repeat(auto-fit, minmax(258px,
+  minmax(0, 1fr)))` invalidates the whole declaration and silently collapses the
+  grid to one column per row.
 - The brand mark sits on a light `#f2f3f4` tile: its black and dark-red segments
   disappear on the dark ground, and it must not be recoloured.
 
@@ -227,5 +237,9 @@ pages, demo data, 89 passing tests, `update-and-run.cmd`.
   "backup size trend" chart is the obvious next thing.
 - No alerting. `cli report` exits non-zero when there are problems, which is
   enough for a scheduled task to email on, but there's no in-app notification.
+- The live log is a **memory** tail (600 lines, `logbuffer.py`), so it resets on
+  restart and is per-process. The durable record is `collector_runs`. If it ever
+  needs to survive a restart, that is a file handler or a table, not a bigger
+  buffer.
 - Per-source retention, and a way to bulk-edit timezones from the Servers grid,
   were both considered and not built.

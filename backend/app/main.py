@@ -10,11 +10,15 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import router
+from .collectors import close_orphaned_runs
 from .config import get_settings
 from .db import init_db
+from .logbuffer import install as install_log_buffer
 from .scheduler import start_scheduler, stop_scheduler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+# Keeps a bounded tail of the log in memory for the Collectors page.
+install_log_buffer()
 
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
@@ -22,6 +26,7 @@ FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    close_orphaned_runs()
     start_scheduler()
     yield
     stop_scheduler()

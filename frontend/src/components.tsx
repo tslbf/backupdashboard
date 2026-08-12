@@ -451,8 +451,8 @@ function Tooltip({ tip }: { tip: TipState | null }) {
   );
 }
 
-const AXIS_BAND = 20; // reserved inside the container so labels never clip
-const Y_GUTTER = 30;
+const AXIS_BAND = 24; // reserved inside the container so labels never clip
+const Y_GUTTER = 40;
 const SEG_GAP = 2; // surface gap between stacked segments — never a border
 
 export interface ColumnPoint extends ChartCounts {
@@ -492,7 +492,7 @@ export function DayColumns({
   const max = Math.max(1, ...points.map((p) => p.total));
   const inner = Math.max(0, width - Y_GUTTER);
   const step = points.length ? inner / points.length : 0;
-  const barWidth = Math.max(2, Math.min(16, step - 3));
+  const barWidth = Math.max(2, Math.min(18, step - 3));
 
   // ~6 labels regardless of range, so a 90-day view doesn't turn into a smear.
   const labelEvery = Math.max(1, Math.ceil(points.length / 6));

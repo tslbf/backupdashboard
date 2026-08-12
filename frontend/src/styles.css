@@ -17,6 +17,49 @@
 @import "./theme/styles.css";
 
 /* ---------------------------------------------------------------------------
+   Type scale
+
+   The vendored theme is dense by design — 13px body, 10px labels — which is
+   right for a wall display and too small for a dashboard someone reads at a
+   desk every morning. Everything below is one step up from the theme's value,
+   roughly +18%, applied as token overrides so the vendored files stay
+   re-syncable.
+
+   The theme's contrast floors were measured at 10–11px; every size here is at
+   or above that, so raising the sizes only makes them safer, never worse.
+
+   If this still reads small, raise the numbers here — every size on the site
+   derives from this block, so nothing needs hunting down individually.
+   --------------------------------------------------------------------------- */
+:root {
+  --text-hero: 76px;
+  --text-kpi: 44px;
+  --text-kpi-sm: 34px;
+  --text-title: 32px;
+  --text-subtitle: 22px;
+  --text-card: 17px;
+  --text-body: 15.5px;
+  --text-cell: 14.5px;
+  --text-meta: 13px;
+  --text-label: 11.5px;
+
+  /* Spacing follows, or bigger text in the same boxes just reads cramped. */
+  --space-1: 3.2px;
+  --space-2: 6.4px;
+  --space-3: 9.6px;
+  --space-4: 12.8px;
+  --space-5: 16px;
+  --space-6: 19.2px;
+  --space-7: 22.4px;
+  --space-8: 25.6px;
+  --space-10: 32px;
+  --space-12: 38.4px;
+
+  --nav-height: 62px;
+  --card-gap: 22px;
+}
+
+/* ---------------------------------------------------------------------------
    Backup outcome tokens
 
    Five classes carry meaning in charts. `running` and `unknown` fold into one
@@ -93,15 +136,15 @@ input, button, select, textarea { font-family: inherit; letter-spacing: inherit;
 /* The mark's black and dark-red segments vanish on a dark ground, so it sits on
    a light safe-area tile rather than being recoloured. */
 .brand-tile {
-  width: 26px;
-  height: 26px;
+  width: 29px;
+  height: 29px;
   border-radius: var(--radius-sm);
   background: #f2f3f4;
   display: grid;
   place-items: center;
   flex: none;
 }
-.brand-tile img { width: 19px; height: 19px; display: block; }
+.brand-tile img { width: 21px; height: 21px; display: block; }
 .brand-name {
   font-size: var(--text-card);
   font-weight: var(--weight-medium);
@@ -128,7 +171,7 @@ input, button, select, textarea { font-family: inherit; letter-spacing: inherit;
   transition: color var(--dur-hover), border-color var(--dur-hover);
   white-space: nowrap;
 }
-.appnav a svg { width: 15px; height: 15px; flex: none; }
+.appnav a svg { width: 17px; height: 17px; flex: none; }
 .appnav a:hover { color: var(--color-text); }
 /* rule 1: crimson marks the active surface — this is chrome, not data */
 .appnav a.active { color: var(--color-text); border-bottom-color: var(--color-accent); }
@@ -218,7 +261,7 @@ input, button, select, textarea { font-family: inherit; letter-spacing: inherit;
 .hero-figure {
   /* proportional figures: equal-width digits look loose at display sizes */
   font-variant-numeric: normal;
-  font-size: 66px;
+  font-size: 72px;
   font-weight: var(--weight-medium);
   line-height: 0.9;
   letter-spacing: var(--tracking-hero);
@@ -260,7 +303,7 @@ input, button, select, textarea { font-family: inherit; letter-spacing: inherit;
 .chip-none    { background: var(--o-none-fill);    color: var(--o-none-fg); }
 
 .matrix-cell {
-  height: 22px;
+  height: 26px;
   border-radius: var(--radius-xs);
   display: grid;
   place-items: center;
@@ -593,9 +636,9 @@ th.th-sort.sorted .sort-ind { opacity: 1; }
 .heat { display: flex; gap: 2px; align-items: center; min-width: 0; }
 .heat-cell {
   flex: 1 1 0;
-  min-width: 5px;
-  max-width: 16px;
-  height: 16px;
+  min-width: 6px;
+  max-width: 18px;
+  height: 18px;
   border: none;
   border-radius: var(--radius-xs);
   padding: 0;
@@ -624,8 +667,8 @@ th.th-sort.sorted .sort-ind { opacity: 1; }
 }
 .split-2 > * { min-width: 0; }
 
-.tile-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(178px, minmax(0, 1fr))); gap: var(--space-5); }
-.tile-row.wide { grid-template-columns: repeat(auto-fit, minmax(258px, minmax(0, 1fr))); }
+.tile-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(178px, 1fr)); gap: var(--space-5); }
+.tile-row.wide { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
 .tile {
   border-radius: var(--radius-md);
   padding: var(--space-4);
@@ -742,3 +785,36 @@ th.th-sort.sorted .sort-ind { opacity: 1; }
   color: var(--o-failed-fg);
   white-space: nowrap;
 }
+
+/* ---------- live log ----------
+   Monospace because the content is machine output and columns should line up.
+   Level colour is a hint, never the only signal: the level word is printed. */
+.logbox {
+  height: 320px;
+  overflow: auto;
+  background: var(--color-bg);
+  border-radius: var(--radius-md);
+  box-shadow: var(--edge);
+  padding: var(--space-3) var(--space-4);
+  font-family: var(--font-mono);
+  font-size: var(--text-cell);
+  line-height: 1.55;
+}
+.log-line {
+  display: grid;
+  grid-template-columns: 74px 62px minmax(0, 130px) minmax(0, 1fr);
+  gap: var(--space-3);
+  padding: 1px 0;
+  color: var(--color-neutral-300);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.log-line + .log-line { border-top: 1px solid transparent; }
+.log-ts { color: var(--color-neutral-600); font-variant-numeric: tabular-nums; }
+.log-level { color: var(--color-neutral-600); }
+.log-src { color: var(--color-neutral-500); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-msg { min-width: 0; }
+.log-line.lvl-warning .log-level, .log-line.lvl-warning .log-msg { color: var(--o-warning-fg); }
+.log-line.lvl-error .log-level, .log-line.lvl-error .log-msg { color: var(--o-failed-fg); }
+.log-line.lvl-error { background: var(--o-failed-fill); border-radius: var(--radius-xs); }
+.log-empty { color: var(--color-neutral-600); padding: var(--space-6); text-align: center; font-family: var(--font-body); }

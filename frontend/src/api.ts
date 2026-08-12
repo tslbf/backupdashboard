@@ -180,6 +180,33 @@ export interface CollectorStatus {
   } | null;
 }
 
+export interface LogEntry {
+  id: number;
+  ts: string;
+  level: string;
+  logger: string;
+  message: string;
+}
+
+export interface LogResponse {
+  entries: LogEntry[];
+  last_id: number;
+  buffer_end: number;
+  server_time: string;
+}
+
+export interface CollectorRun {
+  id: number;
+  source: string;
+  display_name: string;
+  started_at: string | null;
+  finished_at: string | null;
+  status: string;
+  records: number;
+  message: string | null;
+  duration_sec: number | null;
+}
+
 export interface ServerPatch {
   timezone?: string;
   night_cutoff_hour?: number;
@@ -209,6 +236,8 @@ export const api = {
   day: (date: string) => get<DayDetail>(`/api/days/${date}`),
   timezones: () => get<string[]>("/api/timezones"),
   collectors: () => get<CollectorStatus[]>("/api/collectors"),
+  collectorRuns: (limit = 40) => get<CollectorRun[]>(`/api/collectors/runs?limit=${limit}`),
+  logs: (after = 0) => get<LogResponse>(`/api/logs?after=${after}`),
   runCollector: (source: string) => fetch(`/api/collectors/${source}/run`, { method: "POST" }),
   refresh: () => fetch("/api/refresh", { method: "POST" }),
   patchServer: (id: number, patch: ServerPatch) =>

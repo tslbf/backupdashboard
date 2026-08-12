@@ -769,6 +769,58 @@ def collectors(session: Session = Depends(get_session)):
     return out
 
 
+@router.get("/collectors/runs")
+def collector_runs(
+    limit: int = Query(default=40, ge=1, le=200),
+    source: str | None = None,
+    session: Session = Depends(get_session),
+):
+    """Recent runs across all sources — the durable record behind the live log."""
+    config = _source_config(session)
+    query = session.query(CollectorRun)
+    if source:
+        query = query.filter(CollectorRun.source == source)
+    runs = query.order_by(CollectorRun.started_at.desc()).limit(limit).all()
+    return [
+        {
+            "id": run.id,
+            "source": run.source,
+            "display_name": _display_name(config, run.source),
+            "started_at": _iso(run.started_at),
+            "finished_at": _iso(run.finished_at),
+            "status": run.status,
+            "records": run.records,
+            "message": run.message,
+            "duration_sec": int((run.finished_at - run.started_at).total_seconds())
+            if run.finished_at and run.started_at
+            else None,
+        }
+        for run in runs
+    ]
+
+
+@router.get("/logs")
+def logs(
+    after: int = Query(default=0, ge=0),
+    limit: int = Query(default=200, ge=1, le=600),
+):
+    """Tail of the app log, for the live panel on the Collectors page.
+
+    `after` is the last id the client already has, so polling costs one small
+    response rather than the whole buffer each time.
+    """
+    from .logbuffer import get_handler
+
+    handler = get_handler()
+    entries = handler.entries(after=after, limit=limit)
+    return {
+        "entries": entries,
+        "last_id": entries[-1]["id"] if entries else after,
+        "buffer_end": handler.last_id(),
+        "server_time": _iso(utcnow()),
+    }
+
+
 @router.post("/collectors/{source}/run")
 def trigger_collector(source: str, background: BackgroundTasks):
     collector = ALL_COLLECTORS.get(source)

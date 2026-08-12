@@ -1,4 +1,4 @@
-from .base import Collector, run_collector
+from .base import Collector, close_orphaned_runs, run_collector
 from .azure import AzureCollector
 from .legacy_sql import LegacySqlCollector
 from .nable import NableCollector
@@ -14,4 +14,4 @@ ALL_COLLECTORS: dict[str, Collector] = {
     ]
 }
 
-__all__ = ["Collector", "run_collector", "ALL_COLLECTORS"]
+__all__ = ["Collector", "run_collector", "close_orphaned_runs", "ALL_COLLECTORS"]

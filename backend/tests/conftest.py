@@ -17,12 +17,13 @@ os.environ["DISPLAY_TIMEZONE"] = "America/New_York"
 @pytest.fixture
 def session():
     from app.db import init_db, session_factory
-    from app.models import BackupEvent, Server, ServerDay
+    from app.models import BackupEvent, CollectorRun, Server, ServerDay
 
     init_db()
     with session_factory()() as db:
         db.query(ServerDay).delete()
         db.query(BackupEvent).delete()
         db.query(Server).delete()
+        db.query(CollectorRun).delete()
         db.commit()
         yield db
