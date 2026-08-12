@@ -27,7 +27,10 @@ class Settings(BaseSettings):
     # --- Application database -------------------------------------------------
     # SQLite by default so the app runs with zero setup; point at SQL Server in
     # production, e.g.:
-    #   mssql+pyodbc://svc_backupdash:...@AZUSCCM01/BackupDashboard?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
+    #   mssql+pyodbc://@AZUSCCM01/BackupDashboard?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
+    # An empty user slot means Windows auth; SQLAlchemy supplies
+    # Trusted_Connection itself. This is the app's own database, not the legacy
+    # BackupReporting one.
     app_db_url: str = "sqlite:///./backupdashboard.db"
 
     # --- Web -------------------------------------------------------------------
@@ -89,7 +92,7 @@ class Settings(BaseSettings):
     # --- Legacy BackupReporting import -----------------------------------------
     # The SQL database the PowerShell scripts wrote to. Read-only, used to
     # backfill history that predates this app.
-    #   mssql+pyodbc://svc_reader:...@AZUSCCM01/BackupReporting?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
+    #   mssql+pyodbc://@AZUSCCM01/BackupReporting?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
     legacy_db_url: str = ""
     legacy_table: str = "dbo.BackupEvents"
     # Those scripts stored Eastern local time, not UTC. This is the timezone

@@ -45,15 +45,37 @@ back to the real one — nothing about it is sticky.
 
 ## The app database
 
-SQLite is fine for evaluation. For production point `APP_DB_URL` at SQL Server:
+SQLite is fine for evaluation. For production point `APP_DB_URL` at SQL Server.
+The empty slot before `@` means **Windows authentication** — the same thing the
+PowerShell scripts do with `Integrated Security=True`:
 
 ```
-APP_DB_URL=mssql+pyodbc://svc_backupdash:...@AZUSCCM01/BackupDashboard?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
+APP_DB_URL=mssql+pyodbc://@AZUSCCM01/BackupDashboard?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
 ```
 
-Create an empty `BackupDashboard` database; `init-db` creates the tables on
-startup. The account needs `db_datareader` + `db_datawriter` + `db_ddladmin` (or
-just `db_owner` on its own database).
+SQLAlchemy adds `Trusted_Connection=Yes` itself when the username is empty —
+adding it by hand just duplicates it. The connection runs as whichever account
+launches the app, so under NSSM it is the *service* account that needs the SQL
+rights, not your login.
+
+**This is not `BackupReporting`.** That is the legacy database the PowerShell
+scripts write, and this app only ever reads it, once, for the backfill (see
+`LEGACY_DB_URL`). Create a separate empty `BackupDashboard`; `init-db` creates
+the tables on startup. The account needs `db_datareader` + `db_datawriter` +
+`db_ddladmin`, or just `db_owner` on that one database.
+
+Pointing both settings at `BackupReporting` does work — the app's tables land
+alongside `dbo.BackupEvents` — but you then have two schemas in one database and
+a messier cleanup when the old scripts are retired.
+
+Two syntax traps:
+
+- **SQL authentication** puts the password in the URL, so any `@ : / ?` in it
+  must be percent-encoded (`@` → `%40`, `:` → `%3A`) or it is parsed as the host.
+  Windows auth avoids this entirely.
+- **A named instance** needs a literal backslash —
+  `//@AZUSCCM01\SQLEXPRESS/...`. Percent-encoded `%5C` is *not* decoded and
+  silently produces a broken server name.
 
 **`IM002`** on startup means ODBC Driver 18 is not installed, or `APP_DB_URL` is
 still the placeholder.
@@ -66,6 +88,13 @@ The three PowerShell scripts have been writing to
 ```
 python -m app.cli collect legacy
 python -m app.cli refresh
+```
+
+with, in `.env`:
+
+```
+LEGACY_DB_URL=mssql+pyodbc://@AZUSCCM01/BackupReporting?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
+LEGACY_TABLE=dbo.BackupEvents
 ```
 
 The importer converts the stored Eastern local times back to UTC (respecting
