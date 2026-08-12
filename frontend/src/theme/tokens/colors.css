@@ -1,0 +1,63 @@
+:root {
+  /* ── ground ─────────────────────────────────────────────
+     Neutral gray, not blue-black. Surfaces step up in lightness,
+     never in chroma. */
+  --color-bg: #181a1f;
+  --color-surface: #23252b;
+  --color-panel: #1d1f24;
+  --color-text: #e9e9ec;
+  --color-divider: rgba(233,233,236,0.14);
+  --color-row-rule: rgba(233,233,236,0.06);
+
+  /* ── accent: LB Foster crimson, sampled from the logo letterforms ──
+     Chrome only. Never a data bar, row tint, or status colour. */
+  --color-accent-100: #fdeef0;
+  --color-accent-200: #f6ccd0;
+  --color-accent-300: #e79ba1;   /* accent TEXT on dark — the base is 2.86:1 */
+  --color-accent-400: #d4626a;   /* accent BORDERS — clears 3:1 for boundaries */
+  --color-accent-500: #c22832;
+  --color-accent-600: #a3202a;
+  --color-accent-700: #7a1a21;
+  --color-accent-800: #4e1216;
+  --color-accent-900: #330f12;
+  --color-accent: var(--color-accent-500);
+
+  /* ── secondary: the logo's gray. Carries neutral-but-active states. ── */
+  --color-accent-2-300: #cdd3d3;
+  --color-accent-2-500: #a1abac;
+  --color-accent-2-700: #5f6767;
+  --color-accent-2-900: #2e3232;
+  --color-accent-2: var(--color-accent-2-500);
+
+  /* ── neutral ramp ── */
+  --color-neutral-100: #f4f4f6;
+  --color-neutral-200: #e2e3e7;
+  --color-neutral-300: #cdcfd5;
+  --color-neutral-400: #b0b3bb;
+  --color-neutral-500: #91949d;
+  --color-neutral-600: #8b8e97;   /* floor for 10-11px labels; darker fails AA */
+  --color-neutral-700: #4d5057;
+  --color-neutral-800: #34363c;
+  --color-neutral-900: #23252b;
+
+  /* ── status ──────────────────────────────────────────────
+     Bright enough to read as lit against the gray. Never used alone:
+     pair every one with a glyph and a word. */
+  --color-ok: #7ddc4e;        --color-ok-hi: #a8f07a;   --color-ok-lo: #48a627;
+  --color-ok-300: #b6f08f;    --color-ok-fill: rgba(125,220,78,0.14);
+  --color-warn: #f0a63a;      --color-warn-hi: #ffc76b; --color-warn-lo: #a86d16;
+  --color-warn-300: #f8cf8c;  --color-warn-fill: rgba(240,166,58,0.17);
+  --color-crit: #fa5a4b;      --color-crit-hi: #ff8073; --color-crit-lo: #b8352a;
+  --color-crit-300: #ffa79c;  --color-crit-fill: rgba(250,90,75,0.20);
+  --color-busy: #f79a2b;      --color-busy-hi: #ffbb5e; --color-busy-lo: #b3641a;
+  --color-busy-300: #ffc98a;  --color-busy-fill: rgba(247,154,43,0.18);
+  --color-idle: #5a6066;      --color-idle-hi: #63676f; --color-idle-lo: #34363c;
+  --color-idle-300: #b0b3bb;  --color-idle-fill: rgba(145,148,157,0.13);
+  --color-na: #34363c;        --color-na-300: #91949d;
+  --color-na-fill: rgba(145,148,157,0.04);
+
+  /* ── interaction ── */
+  --tint-hover: color-mix(in srgb, var(--color-neutral-300) 7%, transparent);
+  --tint-selected: color-mix(in srgb, var(--color-neutral-300) 11%, transparent);
+  --tint-track: color-mix(in srgb, var(--color-neutral-500) 10%, transparent);
+}

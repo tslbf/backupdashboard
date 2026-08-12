@@ -239,7 +239,7 @@ export default function Overview() {
       {/* ---------- the list you actually work from ---------- */}
       <div className="split-2">
         <div className="card flush">
-          <div className="card-head" style={{ padding: "var(--s7) var(--s8) 0" }}>
+          <div className="card-head" style={{ padding: "var(--space-7) var(--space-8) 0" }}>
             <div>
               <h2>Servers needing attention</h2>
               <div className="card-hint">
@@ -269,7 +269,7 @@ export default function Overview() {
                 : "Every expected backup completed."}
             </div>
           ) : (
-            <div className="table-wrap" style={{ marginTop: "var(--s5)" }}>
+            <div className="table-wrap" style={{ marginTop: "var(--space-5)" }}>
               <table className="data">
                 <thead>
                   <tr>
@@ -335,7 +335,7 @@ export default function Overview() {
                             {ageLabel(row.last_success_utc)}
                           </span>
                         ) : (
-                          <span style={{ color: "var(--crit-fg)" }}>never</span>
+                          <span style={{ color: "var(--o-failed-fg)" }}>never</span>
                         )}
                       </td>
                     </tr>
@@ -346,13 +346,13 @@ export default function Overview() {
           )}
         </div>
 
-        <div className="mini-grid" style={{ gap: "var(--s7)" }}>
+        <div className="mini-grid" style={{ gap: "var(--space-7)" }}>
           <div className="card">
             <div className="card-head">
               <h2>By source</h2>
             </div>
             {data.per_source.map((source) => (
-              <div key={source.source} style={{ marginBottom: "var(--s4)" }}>
+              <div key={source.source} style={{ marginBottom: "var(--space-4)" }}>
                 <div
                   style={{
                     display: "flex",

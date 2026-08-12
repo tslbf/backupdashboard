@@ -22,16 +22,22 @@ export default function App() {
   return (
     <BrowserRouter>
       <SidebarContext.Provider value={ctx}>
-        <div className="layout">
-          <aside className="sidebar">
+        <div className="app">
+          <header className="appbar">
             <div className="brand">
-              <span className="mark">
-                <Icons.shield />
+              {/* The mark's black and dark-red segments vanish on a dark ground,
+                  so it sits on a light safe-area tile rather than being
+                  recoloured. */}
+              <span className="brand-tile">
+                <img src="/lbf-mark.png" alt="" />
               </span>
-              <span className="brand-name">Backup Status</span>
+              <span>
+                <div className="brand-name">Backup Status</div>
+                <div className="brand-sub">LB Foster Infrastructure</div>
+              </span>
             </div>
-            <div className="nav-label">Monitor</div>
-            <nav>
+
+            <nav className="appnav">
               {NAV.map((n) => (
                 <NavLink key={n.to} to={n.to} end={n.end}>
                   <n.icon />
@@ -40,22 +46,30 @@ export default function App() {
                 </NavLink>
               ))}
             </nav>
+
+            {/* The page's own summary rides in the bar, since a top nav leaves
+                no rail to put it in. */}
             {foot && (
-              <div className="sidebar-foot">
-                <div className="foot-label">{foot.label}</div>
+              <div className="appbar-summary">
+                <span className="summary-label">{foot.label}</span>
                 {foot.rows.map((r) => (
-                  <div className="foot-row" key={r.name}>
+                  <span className="summary-item" key={r.name}>
                     {r.state && (
-                      <span className={`dot sw-${meta(r.state).cls}`} style={{ width: 5, height: 5 }} />
+                      <span
+                        className={`dot sw-${meta(r.state).cls}`}
+                        style={{ width: 6, height: 6 }}
+                        aria-hidden
+                      />
                     )}
-                    <span className="foot-name">{r.name}</span>
-                    {r.value && <span className="foot-val">{r.value}</span>}
-                  </div>
+                    {r.name}
+                    {r.value && <b>{r.value}</b>}
+                  </span>
                 ))}
               </div>
             )}
-          </aside>
-          <main className="main">
+          </header>
+
+          <main className="page">
             <Routes>
               <Route path="/" element={<Overview />} />
               <Route path="/servers" element={<Servers />} />

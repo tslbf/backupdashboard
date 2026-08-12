@@ -492,7 +492,7 @@ export function DayColumns({
   const max = Math.max(1, ...points.map((p) => p.total));
   const inner = Math.max(0, width - Y_GUTTER);
   const step = points.length ? inner / points.length : 0;
-  const barWidth = Math.max(2, Math.min(26, step - 3));
+  const barWidth = Math.max(2, Math.min(16, step - 3));
 
   // ~6 labels regardless of range, so a 90-day view doesn't turn into a smear.
   const labelEvery = Math.max(1, Math.ceil(points.length / 6));
@@ -628,7 +628,7 @@ export interface LinePoint {
 export function DurationChart({
   points,
   label,
-  color = "var(--accent)",
+  color = "var(--color-neutral-300)",
   progress = 1,
   height = 132,
 }: {
@@ -808,7 +808,7 @@ export function Sparkline({
   progress = 1,
   width = 120,
   height = 30,
-  color = "var(--ok-bar)",
+  color = "var(--color-ok)",
 }: {
   points: number[];
   progress?: number;

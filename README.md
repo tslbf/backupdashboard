@@ -123,8 +123,10 @@ Python 3.11+, FastAPI, SQLAlchemy 2.0, APScheduler · React 18 + TypeScript +
 Vite, plain CSS · SQLite for dev, SQL Server via pyodbc in production ·
 credentials via Windows DPAPI.
 
-Same stack and the same design tokens as the asset-health dashboard, so the two
-roll up together.
+The UI wears the **LB Foster Infrastructure dark ops theme**, vendored under
+`frontend/src/theme/`. Brand crimson is chrome only — the logo tile, the active
+nav underline, focus rings — and never a chart mark, row tint or status colour.
+Same backend stack as the asset-health dashboard, so the two roll up together.
 
 ## Known limitations
 

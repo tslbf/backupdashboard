@@ -1,0 +1,24 @@
+:root {
+  /* 2.8px step — dense on purpose. Every step exists; skipping one
+     invalidates the whole declaration and silently computes to 0. */
+  --space-1: 2.8px;
+  --space-2: 5.6px;
+  --space-3: 8.4px;
+  --space-4: 11.2px;
+  --space-5: 14px;
+  --space-6: 16.8px;
+  --space-7: 19.6px;
+  --space-8: 22.4px;
+  --space-10: 28px;
+  --space-12: 33.6px;
+
+  --radius-xs: 3px;    /* matrix cells */
+  --radius-sm: 4px;    /* inputs, buttons, small tiles */
+  --radius-md: 8px;    /* dropdown panels, tiles */
+  --radius-lg: 14px;   /* cards */
+  --radius-pill: 999px;
+
+  --nav-height: 54px;
+  --page-min-width: 1280px;
+  --card-gap: 20px;
+}

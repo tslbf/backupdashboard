@@ -108,11 +108,6 @@ export default function History() {
             Every backup night, counted per server per source. Click a night to see what ran.
           </p>
         </div>
-        <div className="head-actions">
-          <div className="badge">
-            Success rate <b>{overall != null ? `${overall}%` : "—"}</b>
-          </div>
-        </div>
       </div>
 
       {/* One filter row above every chart it scopes. */}
@@ -171,16 +166,16 @@ export default function History() {
               <div className="kicker">Longest single job</div>
               <DurationChart
                 label="longest job"
-                color="var(--accent)"
+                color="var(--color-text)"
                 points={durations.map((d) => ({ date: d.date, value: d.max_sec }))}
                 progress={p}
               />
-              <div className="kicker" style={{ marginTop: "var(--s4)" }}>
+              <div className="kicker" style={{ marginTop: "var(--space-4)" }}>
                 Median job
               </div>
               <DurationChart
                 label="median job"
-                color="var(--ok-bar)"
+                color="var(--color-neutral-500)"
                 points={durations.map((d) => ({ date: d.date, value: d.median_sec }))}
                 progress={p}
               />
@@ -229,7 +224,7 @@ export default function History() {
 
       {selected && (
         <div className="card flush" id="day">
-          <div className="card-head" style={{ padding: "var(--s7) var(--s8) var(--s4)" }}>
+          <div className="card-head" style={{ padding: "var(--space-7) var(--space-8) var(--space-4)" }}>
             <div>
               <h2>{fmtDay(selected, { weekday: "long", month: "long", day: "numeric" })}</h2>
               <div className="card-hint">
@@ -248,7 +243,7 @@ export default function History() {
             </div>
           </div>
           {!detail ? (
-            <div style={{ padding: "var(--s7)" }}>
+            <div style={{ padding: "var(--space-7)" }}>
               <Skeleton height={200} />
             </div>
           ) : (

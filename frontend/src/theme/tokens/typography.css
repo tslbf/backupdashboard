@@ -1,0 +1,27 @@
+/* Inter is bundled via @fontsource-variable/inter in main.tsx — deliberately
+   not fetched from Google Fonts, which a firewalled server cannot reach. */
+
+:root {
+  --font-body: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-heading: var(--font-body);
+  --font-mono: ui-monospace, Menlo, Consolas, monospace;
+
+  --text-hero: 82px;      /* one per screen, line-height .9, -0.04em */
+  --text-kpi: 38px;
+  --text-kpi-sm: 30px;
+  --text-title: 26px;     /* page h1, -0.02em */
+  --text-subtitle: 19px;
+  --text-card: 14px;      /* card h2, weight 500 */
+  --text-body: 13px;
+  --text-cell: 12px;      /* table cells */
+  --text-meta: 11px;
+  --text-label: 10px;     /* uppercase, 0.1em-0.14em tracking */
+
+  --tracking-page: -0.005em;
+  --tracking-tight: -0.02em;
+  --tracking-hero: -0.04em;
+  --tracking-label: 0.12em;
+
+  --weight-regular: 400;
+  --weight-medium: 500;   /* headings never go past this */
+}

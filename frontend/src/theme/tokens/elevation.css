@@ -1,0 +1,15 @@
+:root {
+  /* On a dark ground, elevation is an edge plus ambient darkness —
+     never a stacked drop shadow. */
+  --edge: inset 0 0 0 1px var(--color-neutral-800);
+  --edge-hover: inset 0 0 0 1px var(--color-neutral-700);
+  --shadow-menu: 0 18px 44px rgba(0,0,0,0.6);
+  --shadow-drawer: -26px 0 64px rgba(0,0,0,0.55);
+  --shadow-tip: 0 12px 30px rgba(0,0,0,0.6);
+
+  --ease-out: cubic-bezier(.16,1,.3,1);
+  --dur-intro: 850ms;
+  --dur-state: 350ms;
+  --dur-hover: 180ms;
+  --stagger: 90ms;
+}

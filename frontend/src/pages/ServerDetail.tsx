@@ -132,7 +132,7 @@ export default function ServerDetail() {
             <Legend items={chartLegend(legendTotals)} />
           </div>
           <HeatStrip cells={data.timeline} />
-          <div className="tile-row" style={{ marginTop: "var(--s5)" }}>
+          <div className="tile-row" style={{ marginTop: "var(--space-5)" }}>
             <div className="tile">
               <span className="label">Last good backup</span>
               <span className="value" style={{ fontSize: 22 }}>
@@ -245,7 +245,7 @@ export default function ServerDetail() {
       </div>
 
       <div className="card flush">
-        <div className="card-head" style={{ padding: "var(--s7) var(--s8) var(--s4)" }}>
+        <div className="card-head" style={{ padding: "var(--space-7) var(--space-8) var(--space-4)" }}>
           <div>
             <h2>Recent runs</h2>
             <div className="card-hint">

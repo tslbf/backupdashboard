@@ -183,7 +183,7 @@ export default function Servers() {
 
       <div className="card flush">
         {!data ? (
-          <div style={{ padding: "var(--s7)" }}>
+          <div style={{ padding: "var(--space-7)" }}>
             <Skeleton height={320} />
           </div>
         ) : sorted.length === 0 ? (
@@ -264,7 +264,7 @@ export default function Servers() {
                     </td>
                     <td className="num">
                       {row.problem_nights > 0 ? (
-                        <span style={{ color: "var(--crit-fg)" }}>{row.problem_nights}</span>
+                        <span style={{ color: "var(--o-failed-fg)" }}>{row.problem_nights}</span>
                       ) : (
                         <span className="muted">0</span>
                       )}
