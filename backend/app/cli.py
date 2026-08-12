@@ -1,0 +1,207 @@
+"""Command-line entry points:
+
+  python -m app.cli init-db            create tables + seed source config
+  python -m app.cli collect all        run every configured collector once
+  python -m app.cli collect veeam      run one collector
+  python -m app.cli collect legacy     backfill from BackupReporting.dbo.BackupEvents
+  python -m app.cli refresh            rebuild every night's rollup from events
+  python -m app.cli recompute          re-stamp report dates, then refresh
+  python -m app.cli report [--date]    print a night's summary to the console
+  python -m app.cli seed-demo          load demo data (for evaluating the UI)
+  python -m app.cli purge <source>     delete one source's events
+  python -m app.cli protect            encrypt a secret for .env (Windows DPAPI)
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+
+from .collectors import ALL_COLLECTORS, run_collector
+from .config import get_settings
+from .db import init_db, session_factory
+
+
+def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    parser = argparse.ArgumentParser(prog="backupdashboard")
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("init-db")
+    collect = sub.add_parser("collect")
+    collect.add_argument("source", choices=["all", *ALL_COLLECTORS.keys()])
+    sub.add_parser("refresh")
+    sub.add_parser("recompute")
+    report_cmd = sub.add_parser("report")
+    report_cmd.add_argument("--date", help="YYYY-MM-DD (default: last night)")
+    sub.add_parser("seed-demo")
+    purge = sub.add_parser("purge")
+    purge.add_argument("source", choices=[*ALL_COLLECTORS.keys(), "all"])
+    protect_cmd = sub.add_parser("protect")
+    protect_cmd.add_argument(
+        "--machine",
+        action="store_true",
+        help="machine scope: any account on THIS machine can decrypt (default: only the current user)",
+    )
+    protect_cmd.add_argument(
+        "--show",
+        action="store_true",
+        help="visible input (paste-friendly; some Windows consoles can't paste into hidden prompts)",
+    )
+    args = parser.parse_args()
+
+    if args.command == "protect":
+        return _protect(args)
+
+    init_db()
+
+    if args.command == "init-db":
+        print("database initialized")
+    elif args.command == "collect":
+        return _collect(args)
+    elif args.command == "refresh":
+        from .rollups import refresh_all, refresh_server_summaries
+
+        with session_factory()() as session:
+            refresh_server_summaries(session)
+            written = refresh_all(session)
+        print(f"rebuilt {written} server-night rows")
+    elif args.command == "recompute":
+        return _recompute()
+    elif args.command == "report":
+        return _report(args.date)
+    elif args.command == "seed-demo":
+        from .demo_data import seed_demo
+
+        seed_demo()
+        print("demo data loaded")
+    elif args.command == "purge":
+        return _purge(args.source)
+    return 0
+
+
+def _collect(args) -> int:
+    settings = get_settings()
+    if args.source == "all":
+        # 'legacy' is a backfill source; `collect all` is the scheduled path and
+        # must not re-walk the whole historical table every hour.
+        targets = [
+            c
+            for name, c in ALL_COLLECTORS.items()
+            if name != "legacy" and c.is_configured(settings)
+        ]
+    else:
+        targets = [ALL_COLLECTORS[args.source]]
+    if not targets:
+        print("no collectors are configured — set source credentials in backend/.env")
+        return 1
+    failed = False
+    for collector in targets:
+        run = run_collector(collector)
+        print(f"{collector.source}: {run.status} ({run.records} records) {run.message or ''}")
+        failed = failed or run.status != "success"
+    return 1 if failed else 0
+
+
+def _recompute() -> int:
+    """Re-stamp every event's report date, then rebuild the nights.
+
+    Needed after changing a timezone default, the cutoff hour, or importing rows
+    that were written before a server's timezone was corrected.
+    """
+    from .ingest import restamp_server
+    from .models import Server
+    from .rollups import refresh_all, refresh_server_summaries
+
+    with session_factory()() as session:
+        changed = 0
+        for server in session.query(Server).all():
+            changed += restamp_server(session, server)
+        session.commit()
+        refresh_server_summaries(session)
+        written = refresh_all(session)
+    print(f"re-stamped {changed} events, rebuilt {written} server-night rows")
+    return 0
+
+
+def _report(day: str | None) -> int:
+    """Console version of the landing page — handy for a scheduled task email."""
+    from .api import overview
+
+    with session_factory()() as session:
+        data = overview(date_param=day, session=session)
+
+    counts = data["counts"]
+    print(f"\nBackup report for {data['report_date']} ({data['display_timezone']})")
+    print(
+        f"  servers: {data['servers_total']}   protected: {data['servers_protected']}"
+        f" ({data['protected_pct']}%)"
+    )
+    print(
+        "  success={success} warning={warning} failed={failed} "
+        "no-backup={missed} running={running} unknown={unknown}".format(**counts)
+    )
+    if not data["problems"]:
+        print("\n  No problems. \n")
+        return 0
+    print(f"\n  {len(data['problems'])} need attention:")
+    width = max(len(p["server"]) for p in data["problems"])
+    for problem in data["problems"]:
+        streak = f"  ({problem['streak']} nights)" if problem["streak"] > 1 else ""
+        print(
+            f"    {problem['outcome']:<8} {problem['server']:<{width}}  "
+            f"{problem['source_name']:<12} {problem['result_raw'] or '—'}{streak}"
+        )
+    print()
+    return 1
+
+
+def _purge(source: str) -> int:
+    from .models import BackupEvent, Server, ServerDay
+
+    with session_factory()() as session:
+        query = session.query(BackupEvent)
+        days = session.query(ServerDay)
+        if source != "all":
+            query = query.filter(BackupEvent.source == source)
+            days = days.filter(ServerDay.source == source)
+        removed = query.delete(synchronize_session=False)
+        days.delete(synchronize_session=False)
+        # Servers that only existed because of this source go too.
+        orphans = (
+            session.query(Server)
+            .filter(~Server.events.any())
+            .delete(synchronize_session=False)
+        )
+        session.commit()
+    print(f"purged {removed} events and {orphans} servers with no remaining history")
+    return 0
+
+
+def _protect(args) -> int:
+    import getpass
+
+    from .secrets import protect
+
+    if args.show:
+        secret = input("Secret to protect (visible): ")
+    else:
+        secret = getpass.getpass("Secret to protect (input hidden): ")
+    if not secret:
+        print("nothing entered")
+        return 1
+    if any(ord(c) < 32 for c in secret):
+        print(
+            "ERROR: the input contains control characters — this happens when pasting\n"
+            "into a hidden prompt on some Windows consoles (Ctrl+V becomes \\x16).\n"
+            "Re-run with:  python -m app.cli protect --show   (visible input, paste works)"
+        )
+        return 1
+    token = protect(secret, machine_scope=args.machine)
+    scope = "machine" if args.machine else f"user ({getpass.getuser()})"
+    print(f"\nDPAPI-protected ({scope} scope). Put this in backend\\.env, e.g.:\n")
+    print(f"VEEAM_PASSWORD={token}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

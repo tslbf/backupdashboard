@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# App data & secrets
+backend/.env
+*.db
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Misc
+logs/
+.DS_Store
+frontend/*.tsbuildinfo
