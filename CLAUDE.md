@@ -215,6 +215,17 @@ Backup-specific decisions on top of the theme:
 - **Azure**: ARM sometimes returns 7-digit fractional seconds, which
   `fromisoformat` rejects; `parse_dt` truncates to 6. A vault the principal can
   list but not read jobs on is logged and skipped, not fatal.
+  **backupJobs pages by a per-job cursor** — a busy vault returns roughly one
+  record per round trip, so 96h of history is thousands of requests and takes
+  minutes. `$top` is sent but ARM may ignore it; what makes this survivable is
+  progress logging every 25 pages, a repeated-cursor check, and a 2000-page cap.
+  Lower `AZURE_LOOKBACK_HOURS` if it drags.
+- **Veeam TLS**: Python 3.11 links OpenSSL 3.x, whose defaults an older Windows
+  TLS stack won't negotiate — it drops the connection and you get
+  `[WinError 10054] An existing connection was forcibly closed`, which mentions
+  nothing about TLS. `veeam.tls_context()` pins TLS 1.2 and `SECLEVEL=1`, which
+  is what the PowerShell got from `ServicePointManager.SecurityProtocol`.
+  Verification stays fully on when `VEEAM_VERIFY_TLS=true`.
 - **Legacy import**: those scripts wrote **Eastern local time**, not UTC, so the
   importer localizes each row individually (the offset depends on whether that
   timestamp was EST or EDT). The fall-back hour is genuinely ambiguous; `fold=0`
@@ -237,6 +248,9 @@ pages, demo data, 89 passing tests, `update-and-run.cmd`.
   "backup size trend" chart is the obvious next thing.
 - No alerting. `cli report` exits non-zero when there are problems, which is
   enough for a scheduled task to email on, but there's no in-app notification.
+- httpx logs one INFO line per request, which drowned the panel during Azure's
+  pagination — it is pinned to WARNING in `main.py`. `HTTP_LOG_LEVEL=INFO`
+  restores per-request lines for debugging.
 - The live log is a **memory** tail (600 lines, `logbuffer.py`), so it resets on
   restart and is per-process. The durable record is `collector_runs`. If it ever
   needs to survive a restart, that is a file handler or a table, not a bigger

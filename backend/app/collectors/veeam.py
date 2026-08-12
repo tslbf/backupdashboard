@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import re
+import ssl
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -30,6 +31,36 @@ log = logging.getLogger(__name__)
 
 PAGE_SIZE = 500
 LOG_PAGE_SIZE = 500
+
+
+def tls_context(verify: bool) -> ssl.SSLContext | bool:
+    """The TLS settings a Veeam appliance actually accepts.
+
+    Python 3.11 links OpenSSL 3.x, whose defaults are stricter than the Windows
+    TLS stack an older VBR server presents: it will not negotiate, and the
+    server simply drops the connection. That surfaces as a bare socket reset —
+    `[WinError 10054] An existing connection was forcibly closed by the remote
+    host` — with nothing about certificates in it, which sends you looking in
+    the wrong place entirely.
+
+    The PowerShell this replaces pinned TLS 1.2 explicitly
+    (ServicePointManager.SecurityProtocol) and had no equivalent problem. This
+    does the same, and drops OpenSSL's security level to 1 so the older cipher
+    suites and smaller DH parameters those appliances offer are still on the
+    table.
+    """
+    if verify:
+        return True
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    try:
+        # SECLEVEL=2 (the OpenSSL 3 default) rejects what these appliances offer.
+        context.set_ciphers("DEFAULT@SECLEVEL=1")
+    except ssl.SSLError:  # a build without the legacy suites — nothing to loosen
+        pass
+    return context
 
 # Fields on a log line that name the object being processed, cheapest first.
 _NAME_FIELDS = ("objectName", "entityName", "vmName", "computerName", "objectDisplayName")
@@ -139,8 +170,15 @@ class VeeamCollector(Collector):
                 total += self._collect_host(session, settings, cache, host, since)
             except Exception as exc:  # noqa: BLE001
                 # One unreachable VBR server must not cost us the other's data.
-                log.error("veeam host %s failed: %s", host, exc)
-                failures.append(f"{host}: {exc}")
+                hint = ""
+                if "10054" in str(exc) or "forcibly closed" in str(exc).lower():
+                    hint = (
+                        " — the server closed the connection during the TLS handshake. "
+                        "Check the REST service is listening on port "
+                        f"{settings.veeam_port}, and that this host can reach it."
+                    )
+                log.error("veeam host %s failed: %s%s", host, exc, hint)
+                failures.append(f"{host}: {exc}{hint}")
 
         session.commit()
         if failures and total == 0:
@@ -161,7 +199,10 @@ class VeeamCollector(Collector):
         headers = {"Accept": "application/json", "x-api-version": settings.veeam_api_version}
 
         with httpx.Client(
-            base_url=base, timeout=120, verify=settings.veeam_verify_tls, headers=headers
+            base_url=base,
+            timeout=120,
+            verify=tls_context(settings.veeam_verify_tls),
+            headers=headers,
         ) as client:
             token_resp = client.post(
                 "/api/oauth2/token",

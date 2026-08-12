@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -19,6 +20,12 @@ from .scheduler import start_scheduler, stop_scheduler
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 # Keeps a bounded tail of the log in memory for the Collectors page.
 install_log_buffer()
+
+# httpx emits one INFO line per request. Azure's job pagination makes thousands
+# of them, which flushes everything useful out of the 600-line buffer and buries
+# the collectors' own progress. Warnings and errors still come through; set
+# HTTP_LOG_LEVEL=INFO to get the per-request lines back while debugging.
+logging.getLogger("httpx").setLevel(os.getenv("HTTP_LOG_LEVEL", "WARNING").upper())
 
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 

@@ -29,6 +29,16 @@ SUBSCRIPTIONS_API = "2020-01-01"
 VAULTS_API = "2023-04-01"
 JOBS_API = "2023-02-01"
 
+# backupJobs pages by a per-job continuation cursor, so a busy vault can return
+# one record per round trip and a few days of history becomes thousands of
+# requests. $top asks for more per page; ARM is free to ignore it, which is why
+# the progress logging and the cap below both exist regardless.
+PAGE_SIZE = 1000
+# A backstop, not a limit anyone should hit: without it a paging bug or a cursor
+# that never terminates walks forever with no way to tell from the outside.
+MAX_PAGES = 2000
+LOG_EVERY = 25
+
 
 def parse_dt(value: str | None) -> datetime | None:
     if not value:
@@ -90,11 +100,17 @@ class AzureCollector(Collector):
                 sub_id = subscription.get("subscriptionId")
                 if not sub_id:
                     continue
-                for vault in self._pages(
+                vaults = self._pages(
                     client,
                     f"{ARM}/subscriptions/{sub_id}/providers/Microsoft.RecoveryServices/vaults"
                     f"?api-version={VAULTS_API}",
-                ):
+                )
+                log.info(
+                    "azure: subscription %s has %s vault(s)",
+                    subscription.get("displayName") or sub_id,
+                    len(vaults),
+                )
+                for vault in vaults:
                     group = resource_group_of(vault.get("id"))
                     name = vault.get("name")
                     if not group or not name:
@@ -126,15 +142,46 @@ class AzureCollector(Collector):
             raise RuntimeError("ARM returned no access token — check tenant/app id/secret")
         return token
 
-    def _pages(self, client: httpx.Client, url: str) -> list[dict]:
+    def _pages(self, client: httpx.Client, url: str, label: str = "") -> list[dict]:
+        """Follow ARM's nextLink chain, saying so as it goes.
+
+        Long silences are indistinguishable from a hang, and this is the one
+        place in the app that can legitimately run for minutes.
+        """
         out: list[dict] = []
         next_url: str | None = url
+        pages = 0
+        seen: set[str] = set()
+
         while next_url:
+            # A cursor that repeats is a loop; walking it forever would look
+            # exactly like slow progress.
+            if next_url in seen:
+                log.warning("azure %s: nextLink repeated after %s pages — stopping", label, pages)
+                break
+            seen.add(next_url)
+
             resp = client.get(next_url)
             resp.raise_for_status()
             body = resp.json()
             out.extend(body.get("value") or [])
             next_url = body.get("nextLink")
+            pages += 1
+
+            if label and (pages % LOG_EVERY == 0):
+                log.info("azure %s: %s pages, %s records so far", label, pages, len(out))
+            if pages >= MAX_PAGES:
+                log.warning(
+                    "azure %s: stopped at the %s-page cap with %s records — some history "
+                    "was not read. Narrow AZURE_LOOKBACK_HOURS or raise MAX_PAGES.",
+                    label,
+                    MAX_PAGES,
+                    len(out),
+                )
+                break
+
+        if label:
+            log.info("azure %s: %s records over %s pages", label, len(out), pages)
         return out
 
     def _subscriptions(self, client: httpx.Client, settings: Settings) -> list[dict]:
@@ -173,10 +220,11 @@ class AzureCollector(Collector):
         url = (
             f"{ARM}/subscriptions/{sub_id}/resourceGroups/{group}"
             f"/providers/Microsoft.RecoveryServices/vaults/{vault}/backupJobs"
-            f"?api-version={JOBS_API}"
+            f"?api-version={JOBS_API}&$top={PAGE_SIZE}"
         )
+        log.info("azure: reading jobs from vault %s", vault)
         try:
-            jobs = self._pages(client, f"{url}&$filter={_encode(job_filter)}")
+            jobs = self._pages(client, f"{url}&$filter={_encode(job_filter)}", label=vault)
         except httpx.HTTPStatusError as exc:
             # A vault the principal can list but not read jobs on is a permissions
             # gap on that vault, not a reason to abandon the whole subscription.
@@ -184,6 +232,7 @@ class AzureCollector(Collector):
             return 0
 
         count = 0
+        skipped = 0
         for job in jobs:
             properties = job.get("properties") or {}
             if (properties.get("operation") or "") != "Backup":
@@ -194,6 +243,7 @@ class AzureCollector(Collector):
                 continue
             server = cache.get(properties.get("entityFriendlyName"))
             if server is None:
+                skipped += 1
                 continue
             status = properties.get("status")
             upsert_event(
@@ -216,6 +266,19 @@ class AzureCollector(Collector):
                 },
             )
             count += 1
+            # Storing is a per-event upsert, so a big vault spends real time
+            # here too — commit in batches and keep saying so.
+            if count % 200 == 0:
+                session.commit()
+                log.info("azure %s: stored %s of %s jobs", vault, count, len(jobs))
+
+        session.commit()
+        log.info(
+            "azure %s: stored %s job(s)%s",
+            vault,
+            count,
+            f", skipped {skipped} with no usable server name" if skipped else "",
+        )
         return count
 
 
