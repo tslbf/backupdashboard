@@ -18,6 +18,7 @@ SECRET_FIELDS = [
     "veeam_password",
     "nable_password",
     "azure_client_secret",
+    "smtp_password",
 ]
 
 
@@ -115,6 +116,33 @@ class Settings(BaseSettings):
     # Expect the event count, and every collection, to grow accordingly.
     azure_include_log_backups: bool = False
 
+    # --- Morning digest --------------------------------------------------------
+    # Sent after the daily collection finishes. The dashboard only works if you
+    # visit it; the scripts this replaced pushed to an inbox, and that is the
+    # capability the rewrite would otherwise have lost.
+    #
+    # Blank SMTP_HOST or SMTP_TO disables it entirely.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_to: str = ""  # comma-separated
+    # STARTTLS on 587 (the usual), implicit TLS on 465, neither on an open relay.
+    smtp_starttls: bool = True
+    smtp_ssl: bool = False
+    # "daily"    — send every morning, clean or not. The email is then also a
+    #              heartbeat: one that does not arrive is itself the alert, which
+    #              is the same reasoning as materializing "No backup" rows.
+    # "problems" — only when something needs attention.
+    notify_when: str = "daily"
+    # Prefix for the subject line, so a mail rule can catch it.
+    notify_subject_prefix: str = "Backups"
+    # The URL that reaches this dashboard from a reader's desk. Blank derives it
+    # from the machine's own hostname, because "localhost" in an email is a link
+    # that works only for the one person who does not need it.
+    dashboard_url: str = ""
+
     # --- Legacy BackupReporting import -----------------------------------------
     # The SQL database the PowerShell scripts wrote to. Read-only, used to
     # backfill history that predates this app.
@@ -136,6 +164,24 @@ class Settings(BaseSettings):
 
     def azure_subscription_list(self) -> list[str]:
         return [s.strip() for s in self.azure_subscriptions.split(",") if s.strip()]
+
+    def public_url(self) -> str:
+        import socket
+
+        if self.dashboard_url.strip():
+            return self.dashboard_url.strip().rstrip("/")
+        return f"http://{socket.gethostname()}:8010"
+
+    def notify_recipients(self) -> list[str]:
+        return [a.strip() for a in self.smtp_to.replace(";", ",").split(",") if a.strip()]
+
+    def notify_configured(self) -> bool:
+        return bool(self.smtp_host and self.notify_recipients())
+
+    def notify_sender(self) -> str:
+        """Falls back to the first recipient — some relays reject an empty From,
+        and a digest arriving from yourself is better than not arriving."""
+        return self.smtp_from.strip() or (self.notify_recipients() or [""])[0]
 
     def collect_time_parts(self) -> tuple[int, int] | None:
         """(hour, minute) for the daily run, or None if there isn't one.

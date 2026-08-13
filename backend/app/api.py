@@ -147,6 +147,81 @@ def _streaks(session: Session, server_ids: list[int], before: str) -> dict[int, 
 # ---------------------------------------------------------------------------
 
 
+SUMMARY_VERSION = 1
+
+
+@router.get("/summary")
+def summary(session: Session = Depends(get_session)):
+    """One small, stable payload for another dashboard to embed.
+
+    This is the roll-up surface: the asset dashboard shows a backup tile without
+    knowing anything about report dates, sources, or timezones. Everything a
+    caller needs to render is precomputed and pre-formatted here, because the
+    consumer is a different codebase that must not have to reimplement the
+    night model to draw one number.
+
+    The contract is versioned and additive-only. Fields may be added; renaming
+    or removing one breaks a caller that this repo cannot see or test, so that
+    is a `version` bump and a note in docs/integration.md.
+    """
+    settings = get_settings()
+    data = overview(date_param=None, session=session)
+    counts = data["counts"]
+    problems = data["problems"]
+
+    worst = problems[0]["outcome"] if problems else (SUCCESS if data["jobs_total"] else "unknown")
+    return {
+        "version": SUMMARY_VERSION,
+        "app": "backup",
+        "title": "Backup status",
+        "report_date": data["report_date"],
+        "generated_at": data["generated_at"],
+        "display_timezone": settings.display_timezone,
+        # The headline, already worded — so two dashboards cannot phrase the
+        # same fact differently.
+        "headline": f"{data['servers_protected']} of {data['servers_total']} protected",
+        "servers_total": data["servers_total"],
+        "servers_protected": data["servers_protected"],
+        "protected_pct": data["protected_pct"],
+        "needs_attention": len(problems),
+        "worst_outcome": worst,
+        "counts": counts,
+        # A short list, not the whole estate: a tile has room for a few rows and
+        # a caller that wants everything should link through instead.
+        "problems": [
+            {
+                "server": p["server"],
+                "outcome": p["outcome"],
+                "source": p["source_name"],
+                "detail": p["result_raw"] or "no run recorded",
+                "streak": p["streak"],
+            }
+            for p in problems[:5]
+        ],
+        "collectors": [
+            {
+                "source": c.source,
+                "display_name": c.display_name,
+                "configured": c.is_configured(settings),
+                "status": _last_run_status(session, c.source),
+            }
+            for c in ALL_COLLECTORS.values()
+        ],
+    }
+
+
+def _last_run_status(session: Session, source: str) -> str | None:
+    """Stale data is worse than no data on a tile someone else owns — a caller
+    needs to be able to say "this number is from a collector that failed"."""
+    last = (
+        session.query(CollectorRun)
+        .filter(CollectorRun.source == source)
+        .order_by(CollectorRun.started_at.desc())
+        .first()
+    )
+    return last.status if last else None
+
+
 @router.get("/meta")
 def meta(session: Session = Depends(get_session)):
     """Everything the UI needs to explain the clock to the reader."""

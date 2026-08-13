@@ -96,13 +96,14 @@ backend/app/
   collectors/     one module per source; each fails independently
   demo_data.py    ~49 servers x 75 nights, shaped to exercise the edge cases
   logbuffer.py    bounded in-memory log tail behind /api/logs
+  notify.py       the morning digest — text + a deliberately plain HTML part
 frontend/src/
   api.ts          typed client
   components.tsx  status system, charts (DayColumns, DurationChart, HeatStrip), sort, sidebar
   styles.css      assetdashboard's tokens verbatim + a backup-outcome section
   pages/          Overview, Servers, ServerDetail, History, Collectors
 public/lbf-mark.png  brand mark; sits on a light tile, never recoloured
-docs/             install.md, timezones.md, deployment-windows.md
+docs/             install.md, timezones.md, deployment-windows.md, integration.md
 ```
 
 ## SQLite is not SQL Server
@@ -331,8 +332,13 @@ pages, demo data, 89 passing tests, `update-and-run.cmd`.
   still unproven against production. Run each `collect` by hand first.
 - Bytes-transferred is modelled and stored but nothing surfaces it; a
   "backup size trend" chart is the obvious next thing.
-- No alerting. `cli report` exits non-zero when there are problems, which is
-  enough for a scheduled task to email on, but there's no in-app notification.
+- In-app notification is still absent; the **morning digest** (`notify.py`) is
+  the alerting story. It is deliberately part of the 08:00 run rather than its
+  own cron entry — collect, rebuild, *then* send, because a digest built while
+  Azure is still paging reports every not-yet-arrived server as "No backup".
+  It sends on a clean night too by default: an email that only arrives when
+  something is wrong is indistinguishable from a mail system that has died,
+  which is this app's own thesis applied to itself.
 - httpx logs one INFO line per request, which drowned the panel during Azure's
   pagination — it is pinned to WARNING in `main.py`. `HTTP_LOG_LEVEL=INFO`
   restores per-request lines for debugging.

@@ -26,6 +26,27 @@ def _nightly_job() -> None:
         prune_events(session)
 
 
+def _morning_run(collectors: list) -> None:
+    """Collect, rebuild, then send — in that order, once a morning.
+
+    The ordering is the point. A digest built while Azure is still paging
+    reports a night that is half-collected, and every server whose result had
+    not arrived yet reads as "No backup" — the app crying wolf at 8am, in an
+    email, which is the worst possible place for it.
+
+    `run_collector` already contains its own failures, so one source being down
+    still lets the others report and the digest still goes out; it just says so.
+    """
+    for collector in collectors:
+        run_collector(collector)
+
+    _nightly_job()
+
+    from .notify import send_morning_digest
+
+    send_morning_digest()
+
+
 def start_scheduler() -> BackgroundScheduler | None:
     global _scheduler
     settings = get_settings()
@@ -41,6 +62,7 @@ def start_scheduler() -> BackgroundScheduler | None:
             settings.collect_time,
         )
 
+    morning: list = []
     for collector in ALL_COLLECTORS.values():
         if not collector.is_configured(settings):
             log.info("collector %s not configured — skipping schedule", collector.source)
@@ -50,27 +72,7 @@ def start_scheduler() -> BackgroundScheduler | None:
             continue
 
         if daily is not None:
-            # In the viewer's timezone, not UTC: "before I get in" is a local
-            # idea, and it has to stay 8am through both DST changes.
-            scheduler.add_job(
-                run_collector,
-                "cron",
-                hour=daily[0],
-                minute=daily[1],
-                timezone=settings.display_timezone,
-                args=[collector],
-                id=f"collect_{collector.source}_daily",
-                max_instances=1,
-                coalesce=True,
-                misfire_grace_time=3600,
-            )
-            log.info(
-                "scheduled %s daily at %02d:%02d %s",
-                collector.source,
-                daily[0],
-                daily[1],
-                settings.display_timezone,
-            )
+            morning.append(collector)
 
         minutes = collector.interval_minutes(settings)
         if minutes > 0:
@@ -86,6 +88,37 @@ def start_scheduler() -> BackgroundScheduler | None:
             log.info("also polling %s every %s minutes", collector.source, minutes)
         elif daily is None:
             log.info("collector %s has no schedule — manual runs only", collector.source)
+
+    if morning:
+        # One job that runs the collectors in sequence, then rebuilds, then
+        # emails — rather than a cron entry per source. The digest has to report
+        # on data that has finished arriving, and three independent 08:00 jobs
+        # give no way to know when that is.
+        #
+        # In the viewer's timezone, not UTC: "before I get in" is a local idea,
+        # and it has to stay 8am through both DST changes.
+        scheduler.add_job(
+            _morning_run,
+            "cron",
+            hour=daily[0],
+            minute=daily[1],
+            timezone=settings.display_timezone,
+            args=[morning],
+            id="morning_run",
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+        log.info(
+            "scheduled the morning run at %02d:%02d %s — %s, then rollups%s",
+            daily[0],
+            daily[1],
+            settings.display_timezone,
+            ", ".join(c.source for c in morning),
+            ", then the digest" if settings.notify_configured() else "",
+        )
+    elif settings.notify_configured():
+        log.warning("SMTP is configured but COLLECT_TIME is not — no digest will be sent")
 
     # Hourly, not daily: report dates roll over at different wall-clock times for
     # UK and US servers, and a missed night should appear within the hour rather

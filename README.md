@@ -101,6 +101,9 @@ has never once succeeded, and one whose backup silently stopped six nights ago.
    what turns a night with no backup into a visible "No backup" as the report
    date rolls over — different wall-clock moments for the UK and US servers.
 
+Rolling this up into another dashboard? **[docs/integration.md](docs/integration.md)**
+documents `/api/summary` and has a drop-in tile.
+
 Starting from nothing on a fresh box? **[docs/install.md](docs/install.md)** is
 the ordered runbook — prerequisites through first real collection, with the
 failures we actually hit listed at the end. See
@@ -120,6 +123,7 @@ python -m app.cli purge <source>     delete one source's events
 python -m app.cli protect            encrypt a secret for .env (Windows DPAPI)
 python -m app.cli probe veeam        diagnose a Veeam connection: TCP, TLS, REST
 python -m app.cli probe azure        survey what is in the vaults; stores nothing
+python -m app.cli notify [--print]   send the morning digest, or just show it
 ```
 
 ## Tests
@@ -128,7 +132,7 @@ python -m app.cli probe azure        survey what is in the vaults; stores nothin
 cd backend && python -m pytest tests/
 ```
 
-89 tests. The bulk of them are on the report-day math and the missed-backup
+250 tests. The bulk of them are on the report-day math and the missed-backup
 detection, because those are the two places where being wrong produces a
 confident, clean-looking, incorrect dashboard.
 

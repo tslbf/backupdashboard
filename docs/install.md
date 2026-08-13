@@ -212,7 +212,42 @@ duplicating. Safe to re-run.
 
 ---
 
-## 9. Run it
+## 9. The morning digest
+
+Optional, and the thing the PowerShell scripts did that a dashboard alone does
+not: it reaches you on the day you don't open it. Add to `.env`:
+
+```
+SMTP_HOST=smtp.lbfosterco.com
+SMTP_TO=tscott@lbfoster.com
+SMTP_FROM=backups@lbfoster.com
+DASHBOARD_URL=http://AZUSCCM01:8010
+```
+
+See what it would say, without mailing anyone:
+
+```bat
+.venv\Scripts\python.exe -m app.cli notify --print
+```
+
+Then send one for real:
+
+```bat
+.venv\Scripts\python.exe -m app.cli notify
+```
+
+It goes out after the daily collection finishes — collect, rebuild, then send,
+in that order. A digest built while Azure is still paging reports a half-
+collected night, and every server whose result hasn't arrived reads as "No
+backup": the app crying wolf at 8am, by email.
+
+By default it sends **every** morning, clean or not. That is deliberate — an
+email that only arrives when something is wrong can't be told apart from a mail
+system that has quietly died. `NOTIFY_WHEN=problems` opts out.
+
+---
+
+## 10. Run it
 
 ```bat
 cd /d C:\ManagedClient\backupdashboard

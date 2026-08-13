@@ -11,6 +11,7 @@
   python -m app.cli purge <source>     delete one source's events
   python -m app.cli protect            encrypt a secret for .env (Windows DPAPI)
   python -m app.cli probe veeam        diagnose a Veeam connection (TCP/TLS/HTTP)
+  python -m app.cli notify [--print]   send the morning digest (or just show it)
 """
 from __future__ import annotations
 
@@ -46,6 +47,14 @@ def main() -> int:
         "--port",
         type=int,
         help="veeam: override the port (9419 is the VBR REST API, 9398 Enterprise Manager)",
+    )
+    notify_cmd = sub.add_parser("notify")
+    notify_cmd.add_argument("--date", help="YYYY-MM-DD (default: last night)")
+    notify_cmd.add_argument(
+        "--print",
+        dest="print_only",
+        action="store_true",
+        help="print the digest instead of sending it",
     )
     protect_cmd = sub.add_parser("protect")
     protect_cmd.add_argument(
@@ -91,6 +100,41 @@ def main() -> int:
         print("demo data loaded")
     elif args.command == "purge":
         return _purge(args.source)
+    elif args.command == "notify":
+        return _notify(args)
+    return 0
+
+
+def _notify(args) -> int:
+    """Send the morning digest by hand — or print it, which is how you check the
+    wording and the recipients without mailing the estate."""
+    from .notify import build_digest, send_digest
+
+    settings = get_settings()
+    with session_factory()() as session:
+        digest = build_digest(session, settings, args.date)
+
+    if args.print_only:
+        print(f"\nSubject: {digest.subject}\n")
+        print(digest.text)
+        return 0
+
+    if not settings.notify_configured():
+        print(
+            "SMTP_HOST and SMTP_TO are not both set in backend\\.env — nothing to send.\n"
+            "Use --print to see what the digest would say."
+        )
+        return 1
+
+    try:
+        sent = send_digest(digest, settings)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Could not send: {type(exc).__name__}: {exc}")
+        return 1
+    if not sent:
+        print("Nothing sent — clean night and NOTIFY_WHEN=problems.")
+        return 0
+    print(f"Sent to {', '.join(settings.notify_recipients())}: {digest.subject}")
     return 0
 
 
