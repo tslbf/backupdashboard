@@ -21,14 +21,37 @@ one, but it can't install them for you.
 | **ODBC Driver 18 for SQL Server** | only if using SQL Server | see below |
 
 ```bat
-python --version
+py -3 --version
 node --version
 git --version
 ```
 
-If Python prints nothing or opens the Microsoft Store, the Store alias is
-shadowing it: **Settings → Apps → Advanced app settings → App execution
-aliases**, turn off both `python.exe` entries.
+### The Python one is worth reading
+
+If `python --version` answers with
+
+> Python was not found; run without arguments to install from the Microsoft
+> Store, or disable this shortcut from Settings > Apps > Advanced app settings >
+> App execution aliases
+
+then Python is not so much missing as **shadowed**. Windows ships a stub called
+`python.exe` in `WindowsApps` whose only function is to advertise the Store, and
+it sits ahead of a real install on `PATH`. It exists, so `where python` finds it;
+it just doesn't work. Two fixes, do both:
+
+1. **Settings → Apps → Advanced app settings → App execution aliases** — switch
+   off both `python.exe` entries.
+2. Install Python 3.11+ from [python.org](https://www.python.org/downloads/) with
+   **"Add python.exe to PATH"** ticked.
+
+Then **open a new terminal**. A `PATH` change does not reach windows that are
+already open, so re-running in the same console fails identically and looks like
+the fix didn't take.
+
+`py -3 --version` is the more reliable check of the two: the `py` launcher is
+registered by every python.org install and the Store alias cannot shadow it.
+`update-and-run.cmd` tries `py -3` first for the same reason, and proves each
+candidate by running it rather than trusting `where`.
 
 ODBC Driver 18 ([download](https://learn.microsoft.com/sql/connect/odbc/download-odbc-driver-for-sql-server)) —
 verify it registered:
@@ -245,6 +268,11 @@ dependency. `update-and-run.cmd` already does both.
 
 **`pip install` says "Access is denied"**
 Use `python -m pip install ...`.
+
+**"Python was not found; run without arguments to install from the Microsoft Store"**
+The Store alias is shadowing a real install, or there isn't one. See
+[prerequisites](#the-python-one-is-worth-reading) — and open a new terminal
+afterwards.
 
 **UK servers missing from a night, or on the wrong one**
 `tzdata` must be installed — Windows ships no IANA database, and without it

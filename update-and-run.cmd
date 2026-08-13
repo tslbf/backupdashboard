@@ -40,12 +40,27 @@ if errorlevel 1 (
   goto :fail
 )
 if not exist "%PY%" (
-  where python >nul 2>&1
-  if errorlevel 1 (
-    echo   Python is not on PATH - install Python 3.11 or newer.
+  call :findpython
+  if not defined BOOTPY (
+    echo   No working Python 3.11 or newer found - tried "py -3", "python"
+    echo   and "python3".
+    echo.
+    echo   If typing "python" prints "Python was not found; run without
+    echo   arguments to install from the Microsoft Store", it is not missing
+    echo   so much as shadowed: Windows ships a stub of that name that only
+    echo   opens the Store, and it sits ahead of the real thing on PATH.
+    echo     Settings ^> Apps ^> Advanced app settings ^> App execution aliases
+    echo   Switch both python.exe entries off.
+    echo.
+    echo   Then install Python 3.11+ from python.org with "Add python.exe to
+    echo   PATH" ticked, and open a NEW terminal - a PATH change does not
+    echo   reach windows that are already open.
     goto :fail
   )
 )
+REM Outside the block on purpose: %BOOTPY% inside one expands to whatever it
+REM held BEFORE the block ran, which is nothing.
+if defined BOOTPY echo   python: %BOOTPY%
 echo   ok
 
 echo.
@@ -67,7 +82,7 @@ echo.
 echo === [3/5] Checking the Python environment ===
 if not exist "%PY%" (
   echo   No virtual environment yet - creating one...
-  python -m venv "%REPO%backend\.venv" || goto :fail
+  %BOOTPY% -m venv "%REPO%backend\.venv" || goto :fail
 )
 REM "python -m pip" rather than bare "pip": the latter hits Access Denied
 REM under the owner's execution policy.
@@ -111,6 +126,34 @@ REM Bound to localhost so Windows Firewall stays quiet. Use --host 0.0.0.0 to
 REM reach it from another machine, and allow the port through the firewall.
 "%PY%" -m uvicorn app.main:app --host 127.0.0.1 --port %PORT%
 goto :eof
+
+REM -------------------------------------------------------------------
+REM  Find an interpreter good enough to build the venv with.
+REM
+REM  "where python" is not the test, because Windows puts a stub named
+REM  python.exe in WindowsApps that exists, resolves, and does nothing but
+REM  advertise the Microsoft Store. It satisfies "where" and then fails at
+REM  the first real use, several steps later, with a message about the
+REM  Store rather than about this script.
+REM
+REM  So: actually run each candidate and make it prove its version. The py
+REM  launcher goes first - a python.org install always registers it, and
+REM  the Store alias cannot shadow it.
+REM -------------------------------------------------------------------
+:findpython
+set "BOOTPY="
+call :trypython py -3
+call :trypython python
+call :trypython python3
+if defined BOOTPY exit /b 0
+exit /b 1
+
+:trypython
+if defined BOOTPY exit /b 0
+%* -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>&1
+if errorlevel 1 exit /b 0
+set "BOOTPY=%*"
+exit /b 0
 
 :fail
 echo.
