@@ -135,6 +135,25 @@ def timezone_origin(server: Server) -> str:
     return "source" if server.primary_source else "default"
 
 
+def existing_event_keys(session: Session) -> set[tuple[str, int, datetime]]:
+    """Every event already stored, as its natural key.
+
+    For the one-shot legacy import, which walks a table of hundreds of thousands
+    of rows. `upsert_event` normally asks the database whether each row exists —
+    fine for a collector returning a few hundred, and hundreds of thousands of
+    network round trips for this one. One query up front answers all of them.
+
+    Keys are truncated to the second, matching what `upsert_event` writes and
+    looks up, so a row stored before that rule is still recognised.
+    """
+    from .models import BackupEvent
+
+    rows = session.query(
+        BackupEvent.source, BackupEvent.server_id, BackupEvent.start_utc
+    ).all()
+    return {(source, server_id, to_second(start)) for source, server_id, start in rows}
+
+
 def upsert_event(
     session: Session,
     cache: ServerCache,
@@ -150,6 +169,7 @@ def upsert_event(
     native_id: str | None = None,
     bytes_transferred: int | None = None,
     details: dict | None = None,
+    known_keys: set[tuple[str, int, datetime]] | None = None,
 ) -> bool:
     """Insert or update one run. Returns True when a new row was created.
 
@@ -160,6 +180,13 @@ def upsert_event(
     The match is on the whole second (see `to_second`): the stored value has
     been through the database's own datetime precision and may not be the value
     that was handed to it.
+
+    `known_keys`, if given, is a complete set of the keys already stored (see
+    `existing_event_keys`). A key that is not in it cannot be in the database,
+    so the lookup is skipped entirely. It is kept up to date as rows are
+    inserted, so duplicates *within* an import are still caught. Only pass it
+    when nothing else is writing events concurrently — it is for the one-shot
+    backfill, where the per-row lookup is the whole cost of the run.
     """
     from .models import BackupEvent
 
@@ -173,18 +200,22 @@ def upsert_event(
     tz = effective_timezone(server, cache.source_config(), cache._settings)
     stamp = report_date_str(end_utc, tz, effective_cutoff(server, cache._settings))
 
-    existing = (
-        session.query(BackupEvent)
-        .filter(
-            BackupEvent.source == source,
-            BackupEvent.server_id == server.id,
-            BackupEvent.start_utc >= start_utc,
-            BackupEvent.start_utc < start_utc + timedelta(seconds=1),
+    key = (source, server.id, start_utc)
+    if known_keys is not None and key not in known_keys:
+        existing = None  # cannot be there; don't ask
+    else:
+        existing = (
+            session.query(BackupEvent)
+            .filter(
+                BackupEvent.source == source,
+                BackupEvent.server_id == server.id,
+                BackupEvent.start_utc >= start_utc,
+                BackupEvent.start_utc < start_utc + timedelta(seconds=1),
+            )
+            # Deterministic when an older row carries a rounded sub-second value.
+            .order_by(BackupEvent.start_utc, BackupEvent.id)
+            .first()
         )
-        # Deterministic when an older row carries a rounded sub-second value.
-        .order_by(BackupEvent.start_utc, BackupEvent.id)
-        .first()
-    )
     if existing is not None:
         # Converge the row onto the truncated key, so an estate that predates
         # this rule heals itself as its servers are re-collected.
@@ -220,6 +251,9 @@ def upsert_event(
             details=details,
         )
     )
+    if known_keys is not None:
+        # So a second copy of this run later in the same import is recognised.
+        known_keys.add(key)
     return True
 
 

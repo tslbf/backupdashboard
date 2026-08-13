@@ -74,6 +74,16 @@ Guardrails on that, all of which exist to stop the dashboard crying wolf:
   written the day the collectors took over; every night after would be a miss.
 - Retention prunes both events and server-days together.
 
+**Scheduling**: collectors run **once a morning** at `COLLECT_TIME` (08:00 in
+`DISPLAY_TIMEZONE`), not on an interval — backups finish overnight, so the
+answer changes once a night, and an hourly Azure poll is thousands of ARM
+requests for nothing. It is a cron job in the *display* timezone so it stays 8am
+across both DST changes. `*_INTERVAL` still exists and is additive, defaulting
+to 0. The rollup refresh stays **hourly** for a different reason: report dates
+roll over at different wall-clock times for UK and US servers, so a missed night
+has to be able to appear within the hour. `legacy_scheduled=False` keeps the
+backfill off the daily run — it walks the whole historical table.
+
 ## Layout
 
 ```
@@ -280,7 +290,13 @@ Backup-specific decisions on top of the theme:
   9398 *timed out* rather than being refused — a firewall completing the TCP
   handshake and dropping the rest. `scan_ports` covers 9419/9398/9392/9393/443
   because refused and timed-out mean different things.
-- **Legacy import**: those scripts wrote **Eastern local time**, not UTC, so the
+- **Legacy import**: it is the only thing in the app that walks a whole table,
+  so it is the only thing that needs `ingest.existing_event_keys` — one query
+  for every natural key up front, instead of `upsert_event` asking the database
+  per row. It also logs every `PROGRESS_EVERY` rows: a quarter-million-row
+  import is silent for long enough to be indistinguishable from a hang, and
+  that question got asked.
+  Those scripts wrote **Eastern local time**, not UTC, so the
   importer localizes each row individually (the offset depends on whether that
   timestamp was EST or EDT). The fall-back hour is genuinely ambiguous; `fold=0`
   makes the choice explicit. Source strings map onto this app's vocabulary so

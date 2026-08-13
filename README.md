@@ -95,8 +95,11 @@ has never once succeeded, and one whose backup silently stopped six nights ago.
    python -m app.cli collect legacy
    python -m app.cli refresh
    ```
-5. Start the app. The scheduler polls each configured source hourly and
-   refreshes the rollups at 20 past.
+5. Start the app. Every configured source runs once a morning at `COLLECT_TIME`
+   (08:00 in `DISPLAY_TIMEZONE` by default), and **Run now** on the Collectors
+   page kicks any of them off by hand. The rollups refresh hourly, which is
+   what turns a night with no backup into a visible "No backup" as the report
+   date rolls over — different wall-clock moments for the UK and US servers.
 
 Starting from nothing on a fresh box? **[docs/install.md](docs/install.md)** is
 the ordered runbook — prerequisites through first real collection, with the

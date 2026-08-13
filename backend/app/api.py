@@ -735,6 +735,23 @@ def day_detail(day: str, session: Session = Depends(get_session)):
 # ---------------------------------------------------------------------------
 
 
+def _schedule_label(collector, settings) -> str:
+    """What this source's schedule is, in words, for the Collectors page.
+
+    Built here rather than in the UI so there is one description of the
+    schedule and it cannot drift from what the scheduler actually does.
+    """
+    parts: list[str] = []
+    daily = settings.collect_time_parts()
+    if daily is not None and collector.schedulable(settings):
+        zone_label = offset_label(settings.display_timezone) or settings.display_timezone
+        parts.append(f"daily at {daily[0]:02d}:{daily[1]:02d} {zone_label}")
+    minutes = collector.interval_minutes(settings)
+    if minutes > 0:
+        parts.append(f"every {minutes} min")
+    return " + ".join(parts) if parts else "manual only"
+
+
 @router.get("/collectors")
 def collectors(session: Session = Depends(get_session)):
     settings = get_settings()
@@ -754,6 +771,7 @@ def collectors(session: Session = Depends(get_session)):
                 "display_name": collector.display_name,
                 "configured": collector.is_configured(settings),
                 "interval_minutes": collector.interval_minutes(settings),
+                "schedule": _schedule_label(collector, settings),
                 "default_timezone": cfg.default_timezone if cfg else None,
                 "last_run": {
                     "started_at": _iso(last.started_at),

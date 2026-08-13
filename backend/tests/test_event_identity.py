@@ -23,7 +23,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from app.ingest import ServerCache, to_second, upsert_event
+from app.ingest import ServerCache, existing_event_keys, to_second, upsert_event
 from app.models import BackupEvent
 
 
@@ -191,3 +191,97 @@ def test_the_one_gap_in_that_invariant_is_known_and_narrow():
 
     assert stored == datetime(2026, 8, 12, 20, 10, 39)
     assert stored >= to_second(value) + timedelta(seconds=1), "outside the window, as described"
+
+
+class TestTheBackfillFastPath:
+    """The legacy import walks the whole historical table, and `upsert_event`
+    normally asks the database whether each row exists — hundreds of thousands
+    of network round trips, which is what made it look hung.
+
+    `known_keys` answers all of them from one query up front. It has to be
+    exactly as correct as the lookup it replaces.
+    """
+
+    def _cache(self, session):
+        return ServerCache(session, "legacy")
+
+    def _write(self, session, cache, start, known=None, outcome="success"):
+        server = cache.get("OLDBOX")
+        return upsert_event(
+            session,
+            cache,
+            server=server,
+            source="veeam",
+            start_utc=start,
+            end_utc=start + timedelta(minutes=20),
+            outcome=outcome,
+            known_keys=known,
+        )
+
+    def test_it_finds_what_is_already_there(self, session):
+        cache = self._cache(session)
+        start = datetime(2026, 5, 1, 23, 0, 0)
+        self._write(session, cache, start)
+        session.commit()
+
+        known = existing_event_keys(session)
+        created = self._write(session, cache, start, known=known, outcome="failed")
+        session.commit()
+
+        assert created is False
+        assert session.query(BackupEvent).count() == 1
+        assert session.query(BackupEvent).one().outcome == "failed"
+
+    def test_a_second_copy_inside_one_import_is_still_caught(self, session):
+        """The set is kept up to date as rows are inserted — otherwise a table
+        with the same run recorded twice would violate the unique constraint
+        the moment it flushed."""
+        cache = self._cache(session)
+        known = existing_event_keys(session)
+        start = datetime(2026, 5, 1, 23, 0, 0)
+
+        assert self._write(session, cache, start, known=known) is True
+        assert self._write(session, cache, start, known=known) is False
+        session.commit()
+
+        assert session.query(BackupEvent).count() == 1
+
+    def test_the_keys_are_truncated_like_everything_else(self, session):
+        """A row written before the second-precision rule still has to be
+        recognised, or the import would duplicate it."""
+        cache = self._cache(session)
+        server = cache.get("OLDBOX")
+        session.add(
+            BackupEvent(
+                server_id=server.id,
+                source="veeam",
+                start_utc=datetime(2026, 5, 1, 23, 0, 0, 240000),
+                end_utc=datetime(2026, 5, 1, 23, 20, 0),
+                outcome="success",
+                report_date="2026-05-02",
+            )
+        )
+        session.commit()
+
+        known = existing_event_keys(session)
+        assert (("veeam", server.id, datetime(2026, 5, 1, 23, 0, 0))) in known
+
+        created = self._write(session, cache, datetime(2026, 5, 1, 23, 0, 0, 239838), known=known)
+        session.commit()
+
+        assert created is False
+        assert session.query(BackupEvent).count() == 1
+
+    def test_without_the_hint_the_behaviour_is_identical(self, session):
+        """The fast path must be an optimisation and nothing more."""
+        cache = self._cache(session)
+        start = datetime(2026, 5, 1, 23, 0, 0)
+
+        self._write(session, cache, start)
+        session.commit()
+        with_hint = self._write(session, cache, start, known=existing_event_keys(session))
+        without = self._write(session, cache, start)
+        session.commit()
+
+        assert with_hint is False and without is False
+        assert session.query(BackupEvent).count() == 1

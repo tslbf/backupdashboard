@@ -122,9 +122,7 @@ export default function Collectors() {
                   <dt>Records</dt>
                   <dd>{row.last_run ? nfmt(row.last_run.records) : "—"}</dd>
                   <dt>Schedule</dt>
-                  <dd>
-                    {row.interval_minutes > 0 ? `every ${row.interval_minutes} min` : "manual only"}
-                  </dd>
+                  <dd>{row.schedule}</dd>
                   <dt>Timezone</dt>
                   <dd className="ident">
                     {row.default_timezone ?? "—"}

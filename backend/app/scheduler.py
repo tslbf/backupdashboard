@@ -34,24 +34,58 @@ def start_scheduler() -> BackgroundScheduler | None:
         return None
 
     scheduler = BackgroundScheduler(timezone="UTC")
+    daily = settings.collect_time_parts()
+    if daily is None and (settings.collect_time or "").strip():
+        log.warning(
+            "COLLECT_TIME=%r is not a valid HH:MM — no daily collection is scheduled",
+            settings.collect_time,
+        )
+
     for collector in ALL_COLLECTORS.values():
         if not collector.is_configured(settings):
             log.info("collector %s not configured — skipping schedule", collector.source)
             continue
-        minutes = collector.interval_minutes(settings)
-        if minutes <= 0:
-            log.info("collector %s has interval 0 — manual runs only", collector.source)
+        if not collector.schedulable(settings):
+            log.info("collector %s is a backfill source — manual runs only", collector.source)
             continue
-        scheduler.add_job(
-            run_collector,
-            "interval",
-            minutes=minutes,
-            args=[collector],
-            id=f"collect_{collector.source}",
-            max_instances=1,
-            coalesce=True,
-        )
-        log.info("scheduled %s every %s minutes", collector.source, minutes)
+
+        if daily is not None:
+            # In the viewer's timezone, not UTC: "before I get in" is a local
+            # idea, and it has to stay 8am through both DST changes.
+            scheduler.add_job(
+                run_collector,
+                "cron",
+                hour=daily[0],
+                minute=daily[1],
+                timezone=settings.display_timezone,
+                args=[collector],
+                id=f"collect_{collector.source}_daily",
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=3600,
+            )
+            log.info(
+                "scheduled %s daily at %02d:%02d %s",
+                collector.source,
+                daily[0],
+                daily[1],
+                settings.display_timezone,
+            )
+
+        minutes = collector.interval_minutes(settings)
+        if minutes > 0:
+            scheduler.add_job(
+                run_collector,
+                "interval",
+                minutes=minutes,
+                args=[collector],
+                id=f"collect_{collector.source}",
+                max_instances=1,
+                coalesce=True,
+            )
+            log.info("also polling %s every %s minutes", collector.source, minutes)
+        elif daily is None:
+            log.info("collector %s has no schedule — manual runs only", collector.source)
 
     # Hourly, not daily: report dates roll over at different wall-clock times for
     # UK and US servers, and a missed night should appear within the hour rather

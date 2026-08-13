@@ -220,8 +220,12 @@ update-and-run.cmd
 ```
 
 <http://localhost:8010>. From now on that one command pulls, rebuilds and
-launches. The scheduler polls each configured source hourly and refreshes the
-rollups at 20 past.
+launches. Every configured source runs once a morning at `COLLECT_TIME` — 08:00
+in `DISPLAY_TIMEZONE` by default, so it stays 8am through both DST changes — and
+**Run now** on the Collectors page kicks any of them off by hand. The rollups
+refresh hourly regardless, which is what turns a night with no backup into a
+visible "No backup" as the report date rolls over; that happens at different
+wall-clock moments for the UK and US servers, so it cannot be a daily job.
 
 The **Collectors** page has a live log — use it to watch the first real runs.
 

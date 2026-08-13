@@ -26,7 +26,17 @@ class Collector(ABC):
         """Pull from the source and upsert into the app DB. Returns record count."""
 
     def interval_minutes(self, settings: Settings) -> int:
-        return getattr(settings, f"{self.source}_interval", 60)
+        """Extra polling on top of the daily run. 0 means none."""
+        return getattr(settings, f"{self.source}_interval", 0)
+
+    def schedulable(self, settings: Settings) -> bool:
+        """Whether the daily run should include this source.
+
+        False for the legacy backfill: it reads the whole historical table, and
+        running that every morning would spend minutes re-importing rows that
+        have not changed since the PowerShell stopped writing them.
+        """
+        return getattr(settings, f"{self.source}_scheduled", True)
 
 
 def close_orphaned_runs() -> int:

@@ -53,12 +53,21 @@ class Settings(BaseSettings):
 
     # --- Scheduler -------------------------------------------------------------
     scheduler_enabled: bool = True
-    # Per-source poll intervals (minutes). 0 disables scheduling for a source
-    # without removing its credentials (manual runs still work).
-    veeam_interval: int = 60
-    nable_interval: int = 60
-    azure_interval: int = 60
-    legacy_interval: int = 0  # backfill source: run it by hand
+    # The one time a day every configured collector runs, HH:MM in
+    # DISPLAY_TIMEZONE. Backups finish overnight and the dashboard is read in
+    # the morning, so one run before the working day is what the data actually
+    # needs; polling hourly re-asks a question whose answer changed once.
+    # Blank disables the daily run entirely (manual and interval only).
+    # "Run now" on the Collectors page works regardless.
+    collect_time: str = "08:00"
+    # Extra polling on top of the daily run, per source, in minutes.
+    # 0 (the default) means no polling — the daily run and manual runs only.
+    veeam_interval: int = 0
+    nable_interval: int = 0
+    azure_interval: int = 0
+    # The backfill source. Never scheduled: it walks the whole historical table.
+    legacy_interval: int = 0
+    legacy_scheduled: bool = False
 
     # How far back each collector asks for. Generous by default: re-importing an
     # event is a no-op upsert, missing one is a hole in the history.
@@ -127,6 +136,25 @@ class Settings(BaseSettings):
 
     def azure_subscription_list(self) -> list[str]:
         return [s.strip() for s in self.azure_subscriptions.split(",") if s.strip()]
+
+    def collect_time_parts(self) -> tuple[int, int] | None:
+        """(hour, minute) for the daily run, or None if there isn't one.
+
+        A malformed value disables the daily run rather than crashing the app at
+        startup — but says so, because silently never collecting is exactly the
+        failure this dashboard exists to catch.
+        """
+        raw = (self.collect_time or "").strip()
+        if not raw:
+            return None
+        try:
+            hour, _, minute = raw.partition(":")
+            parts = (int(hour), int(minute or 0))
+        except ValueError:
+            return None
+        if not (0 <= parts[0] <= 23 and 0 <= parts[1] <= 59):
+            return None
+        return parts
 
 
 @lru_cache

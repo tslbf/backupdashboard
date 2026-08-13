@@ -170,6 +170,8 @@ export interface CollectorStatus {
   display_name: string;
   configured: boolean;
   interval_minutes: number;
+  /** Already in words — the backend owns this so it can't drift from the scheduler. */
+  schedule: string;
   default_timezone: string | null;
   last_run: {
     started_at: string | null;

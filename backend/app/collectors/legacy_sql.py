@@ -27,7 +27,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from ..config import Settings
-from ..ingest import ServerCache, upsert_event
+from ..ingest import ServerCache, existing_event_keys, upsert_event
 from ..outcomes import normalize
 from ..timeframes import as_utc, zone
 from .base import Collector
@@ -35,6 +35,9 @@ from .base import Collector
 log = logging.getLogger(__name__)
 
 BATCH = 2000
+# Often enough to prove it is alive, rarely enough not to flood the 600-line
+# live log on a table with hundreds of thousands of rows.
+PROGRESS_EVERY = 5000
 
 
 def local_to_utc(value: datetime, tz_name: str) -> datetime:
@@ -79,9 +82,21 @@ class LegacySqlCollector(Collector):
         tz_name = settings.legacy_stored_timezone
         table = settings.legacy_table
 
+        # One query instead of one per row. This import is the only place in the
+        # app that walks a whole table, and asking the database "do you already
+        # have this?" a quarter of a million times over the network is the
+        # difference between a minute and an hour.
+        known = existing_event_keys(session)
+        log.info("legacy import: %s events already stored", len(known))
+
         count = 0
         skipped = 0
+        seen = 0
         with engine.connect() as connection:
+            total = self._row_count(connection, table)
+            if total is not None:
+                log.info("legacy import: %s rows in %s", total, table)
+
             result = connection.execution_options(stream_results=True, yield_per=BATCH).execute(
                 text(
                     f"SELECT ServerName, BackupStartDate, BackupEndDate, JobResult, "
@@ -89,6 +104,17 @@ class LegacySqlCollector(Collector):
                 )
             )
             for row in result:
+                seen += 1
+                # Without this the import is silent for however long it takes,
+                # which is indistinguishable from being hung — and it takes long
+                # enough that the question comes up.
+                if seen % PROGRESS_EVERY == 0:
+                    log.info(
+                        "legacy import: %s%s rows read, %s imported",
+                        f"{seen:,}",
+                        f" of {total:,}" if total else "",
+                        f"{count:,}",
+                    )
                 mapping = row._mapping
                 name = mapping.get("ServerName")
                 end_local = mapping.get("BackupEndDate")
@@ -127,12 +153,29 @@ class LegacySqlCollector(Collector):
                     duration_sec=int(duration) if duration is not None else None,
                     job_name="Imported from BackupReporting",
                     details={"legacy_source": raw_source},
+                    known_keys=known,
                 )
                 count += 1
                 if count % BATCH == 0:
                     session.commit()
 
         session.commit()
-        if skipped:
-            log.info("legacy import skipped %s unusable rows", skipped)
+        log.info(
+            "legacy import: %s rows read, %s imported%s",
+            f"{seen:,}",
+            f"{count:,}",
+            f", {skipped:,} unusable" if skipped else "",
+        )
         return count
+
+    def _row_count(self, connection, table: str) -> int | None:
+        """A denominator for the progress lines. Best effort — a COUNT(*) on a
+        large table is itself slow enough to be worth abandoning rather than
+        letting it delay the import it is supposed to be describing."""
+        try:
+            return connection.execute(
+                text(f"SELECT COUNT(*) FROM {table}")  # noqa: S608 — operator config
+            ).scalar()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("legacy import: could not count rows: %s", exc)
+            return None
