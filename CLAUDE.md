@@ -229,6 +229,19 @@ Backup-specific decisions on top of the theme:
   minutes. `$top` is sent but ARM may ignore it; what makes this survivable is
   progress logging every 25 pages, a repeated-cursor check, and a 2000-page cap.
   Lower `AZURE_LOOKBACK_HOURS` if it drags.
+  **A 60-server estate returned 30,000 jobs.** Two causes, indistinguishable
+  from outside — both now handled, and both *counted* in the per-vault summary
+  line so the next one is a number rather than a hang:
+  - **Transaction-log backups.** SQL/HANA in a VM log-backs-up every 15 minutes
+    per database, and ARM calls each one `operation: Backup` — one database
+    contributes ~384 to a 96h window. Skipped unless
+    `AZURE_INCLUDE_LOG_BACKUPS=true`. The backup type is not a field; it lives
+    in `extendedInfo.propertyBag["Backup Type"]`, and jobs with only one kind
+    (IaaS VM, file share) omit it, so absence must not read as "log".
+  - **`$filter` silently ignored**, which pages the vault's whole retained
+    history. The window is re-applied client-side and the discrepancy logged.
+  `cli probe azure` breaks a window down by management type × backup type
+  without storing anything.
 - **Veeam TLS**: Python 3.11 links OpenSSL 3.x, whose defaults an older Windows
   TLS stack won't negotiate — it drops the connection and you get
   `[WinError 10054] An existing connection was forcibly closed`, which mentions

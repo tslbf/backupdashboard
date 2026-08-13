@@ -271,9 +271,40 @@ single protocol `ServicePointManager.SecurityProtocol = Tls12` gave the
 PowerShell — and lowers OpenSSL's security level so the older cipher suites
 still negotiate.
 
-**Azure runs for many minutes**
-Expected on a first run: ARM pages one job per request. Watch the per-vault
-progress in the live log. Lower `AZURE_LOOKBACK_HOURS` to shorten it.
+**Azure runs for many minutes, or the record count runs into the tens of thousands**
+Sixty servers should produce a few hundred jobs in a 96-hour window, not 30,000.
+See what is actually in the vaults, without storing any of it:
+
+```bat
+.venv\Scripts\python.exe -m app.cli probe azure
+```
+
+Two things cause it, and the survey tells them apart:
+
+- **A `Log` row with a huge count.** SQL Server and SAP HANA inside a VM back
+  their transaction logs up every 15 minutes, per database, and ARM reports each
+  one as `operation: Backup` — there is no server-side filter that separates
+  them from the nightly run. One database contributes ~384 of them to a 96-hour
+  window. These are skipped unless `AZURE_INCLUDE_LOG_BACKUPS=true`.
+- **`outside window`** — ARM ignored the `$filter` and is paging the vault's
+  entire retained history. The window is enforced client-side too, so this is
+  slow rather than wrong, and the per-vault log line reports the count.
+
+Some slowness is inherent regardless: ARM pages backupJobs by a per-job cursor,
+so a busy vault can return roughly one record per round trip. Watch the
+per-vault progress in the live log, and lower `AZURE_LOOKBACK_HOURS` to shorten
+the first run.
+
+To clear what an earlier run stored and start over:
+
+```bat
+.venv\Scripts\python.exe -m app.cli purge azure
+.venv\Scripts\python.exe -m app.cli collect azure
+.venv\Scripts\python.exe -m app.cli refresh
+```
+
+`purge` also drops servers left with no history, which is what removes the
+per-database entries a log-backup run created.
 
 **`Violation of UNIQUE KEY constraint 'uq_event_source_server_start'`**
 Fixed — pull and re-run. SQL Server's `DATETIME` keeps only 1/300 of a second

@@ -64,6 +64,31 @@ def parse_dt(value: str | None) -> datetime | None:
     return parsed.astimezone(timezone.utc).replace(tzinfo=None)
 
 
+def backup_type(properties: dict) -> str | None:
+    """Full / Differential / Incremental / Log, when the job says.
+
+    It is not a first-class field: workload jobs carry it in
+    `extendedInfo.propertyBag` under a key with a space in it, and jobs that
+    have only one kind of backup (an IaaS VM, a file share) omit it entirely.
+    """
+    bag = (properties.get("extendedInfo") or {}).get("propertyBag") or {}
+    for key, value in bag.items():
+        if str(key).strip().lower().replace(" ", "") == "backuptype":
+            return str(value).strip() or None
+    return None
+
+
+def is_log_backup(properties: dict) -> bool:
+    """The 15-minute transaction-log job, as opposed to the nightly backup.
+
+    SQL Server and SAP HANA in a VM back their logs up every 15 minutes by
+    default. ARM reports each one as `operation: Backup`, so no server-side
+    filter separates them from the nightly full — one database alone produces
+    ~384 of them in a 96-hour window.
+    """
+    return (backup_type(properties) or "").lower() == "log"
+
+
 def resource_group_of(resource_id: str | None) -> str | None:
     if not resource_id:
         return None
@@ -212,34 +237,38 @@ class AzureCollector(Collector):
         from_utc: datetime,
         to_utc: datetime,
     ) -> int:
-        job_filter = (
-            f"startTime ge '{from_utc:%Y-%m-%dT%H:%M:%SZ}' "
-            f"and endTime le '{to_utc:%Y-%m-%dT%H:%M:%SZ}' "
-            "and operation eq 'Backup'"
-        )
-        url = (
-            f"{ARM}/subscriptions/{sub_id}/resourceGroups/{group}"
-            f"/providers/Microsoft.RecoveryServices/vaults/{vault}/backupJobs"
-            f"?api-version={JOBS_API}&$top={PAGE_SIZE}"
-        )
         log.info("azure: reading jobs from vault %s", vault)
         try:
-            jobs = self._pages(client, f"{url}&$filter={_encode(job_filter)}", label=vault)
+            jobs = self._pages(client, self._jobs_url(sub_id, group, vault, from_utc, to_utc), label=vault)
         except httpx.HTTPStatusError as exc:
             # A vault the principal can list but not read jobs on is a permissions
             # gap on that vault, not a reason to abandon the whole subscription.
             log.warning("azure: vault %s/%s jobs unreadable: %s", group, vault, exc)
             return 0
 
+        include_logs = cache._settings.azure_include_log_backups
         count = 0
         skipped = 0
+        logs = 0
+        stale = 0
         for job in jobs:
             properties = job.get("properties") or {}
             if (properties.get("operation") or "") != "Backup":
                 continue
+            if not include_logs and is_log_backup(properties):
+                logs += 1
+                continue
             start = parse_dt(properties.get("startTime"))
             end = parse_dt(properties.get("endTime"))
             if start is None or end is None:
+                continue
+            # ARM is not obliged to honour $filter, and a silently ignored one
+            # means walking the vault's entire retained history instead of the
+            # window that was asked for. Enforce it here as well; the count is
+            # reported below, so an ignored filter shows up as a number rather
+            # than as a collection that never ends.
+            if end < from_utc or start > to_utc:
+                stale += 1
                 continue
             server = cache.get(properties.get("entityFriendlyName"))
             if server is None:
@@ -270,16 +299,122 @@ class AzureCollector(Collector):
             # here too — commit in batches and keep saying so.
             if count % 200 == 0:
                 session.commit()
-                log.info("azure %s: stored %s of %s jobs", vault, count, len(jobs))
+                # Not "of len(jobs)" — most of those may have been skipped, and
+                # a denominator that never arrives is worse than no denominator.
+                log.info("azure %s: stored %s jobs so far", vault, count)
 
         session.commit()
+        # One line that accounts for every record ARM returned. "It just goes
+        # and goes" is answerable from this alone: if `jobs` is two orders of
+        # magnitude larger than what was stored, the breakdown says where it
+        # went.
         log.info(
-            "azure %s: stored %s job(s)%s",
+            "azure %s: %s jobs from ARM — stored %s%s%s%s",
             vault,
+            len(jobs),
             count,
-            f", skipped {skipped} with no usable server name" if skipped else "",
+            f", skipped {logs} log backups" if logs else "",
+            f", {stale} outside the window" if stale else "",
+            f", {skipped} with no usable server name" if skipped else "",
         )
+        if stale:
+            log.warning(
+                "azure %s: ARM returned %s jobs outside the %sh window — the $filter "
+                "was ignored, so the whole retained history is being paged through. "
+                "This is why the collection is slow.",
+                vault,
+                stale,
+                cache._settings.azure_lookback_hours,
+            )
         return count
+
+    def _jobs_url(
+        self, sub_id: str, group: str, vault: str, from_utc: datetime, to_utc: datetime
+    ) -> str:
+        """Both bounds on startTime, not one on each end.
+
+        `endTime le <now>` looks equivalent and is not: it drops every job still
+        running, and it makes the filter reference a field the result set is not
+        ordered by.
+        """
+        job_filter = (
+            f"startTime ge '{from_utc:%Y-%m-%dT%H:%M:%SZ}' "
+            f"and startTime le '{to_utc:%Y-%m-%dT%H:%M:%SZ}' "
+            "and operation eq 'Backup'"
+        )
+        return (
+            f"{ARM}/subscriptions/{sub_id}/resourceGroups/{group}"
+            f"/providers/Microsoft.RecoveryServices/vaults/{vault}/backupJobs"
+            f"?api-version={JOBS_API}&$top={PAGE_SIZE}&$filter={_encode(job_filter)}"
+        )
+
+
+def survey(settings: Settings, hours: int) -> list[dict]:
+    """Read-only: what is actually in those vaults, without storing any of it.
+
+    A collection that returns tens of thousands of records for sixty servers is
+    either paging history it was not asked for or counting jobs nobody thinks of
+    as backups. Both look identical from the outside — a number going up — so
+    this breaks the same window down by management type and backup type and
+    prints it, in one short run.
+    """
+    collector = AzureCollector()
+    to_utc = utcnow()
+    from_utc = to_utc - timedelta(hours=hours)
+    out: list[dict] = []
+
+    with httpx.Client(timeout=120) as client:
+        client.headers["Authorization"] = f"Bearer {collector._token(client, settings)}"
+        for subscription in collector._subscriptions(client, settings):
+            sub_id = subscription.get("subscriptionId")
+            if not sub_id:
+                continue
+            vaults = collector._pages(
+                client,
+                f"{ARM}/subscriptions/{sub_id}/providers/Microsoft.RecoveryServices"
+                f"/vaults?api-version={VAULTS_API}",
+            )
+            for vault in vaults:
+                group = resource_group_of(vault.get("id"))
+                name = vault.get("name")
+                if not group or not name:
+                    continue
+                try:
+                    jobs = collector._pages(
+                        client,
+                        collector._jobs_url(sub_id, group, name, from_utc, to_utc),
+                        label=name,
+                    )
+                except httpx.HTTPStatusError as exc:
+                    out.append({"vault": name, "error": str(exc)})
+                    continue
+
+                kinds: dict[str, int] = {}
+                entities: set[str] = set()
+                outside = 0
+                for job in jobs:
+                    properties = job.get("properties") or {}
+                    kind = "{} / {}".format(
+                        properties.get("backupManagementType") or "?",
+                        backup_type(properties) or "(no backup type)",
+                    )
+                    kinds[kind] = kinds.get(kind, 0) + 1
+                    if properties.get("entityFriendlyName"):
+                        entities.add(str(properties["entityFriendlyName"]))
+                    start = parse_dt(properties.get("startTime"))
+                    if start is not None and start < from_utc:
+                        outside += 1
+                out.append(
+                    {
+                        "vault": name,
+                        "subscription": subscription.get("displayName") or sub_id,
+                        "jobs": len(jobs),
+                        "entities": len(entities),
+                        "outside_window": outside,
+                        "kinds": dict(sorted(kinds.items(), key=lambda kv: -kv[1])),
+                    }
+                )
+    return out
 
 
 def _encode(value: str) -> str:

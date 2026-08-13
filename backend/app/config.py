@@ -88,6 +88,16 @@ class Settings(BaseSettings):
     azure_client_secret: str = ""
     # Comma-separated subscription IDs or display names; empty = every visible one.
     azure_subscriptions: str = ""
+    # Azure Backup for SQL Server / SAP HANA inside a VM takes a transaction-log
+    # backup every 15 minutes, per database, and each one is a separate job with
+    # operation "Backup" — indistinguishable from the nightly run in the ARM
+    # filter. Sixty databases produce roughly 23,000 log jobs in a 96-hour
+    # window, which is two orders of magnitude more than the nightly backups
+    # this dashboard exists to report on, and they would bury them.
+    #
+    # Set true if a failed log backup is something you want on the dashboard.
+    # Expect the event count, and every collection, to grow accordingly.
+    azure_include_log_backups: bool = False
 
     # --- Legacy BackupReporting import -----------------------------------------
     # The SQL database the PowerShell scripts wrote to. Read-only, used to

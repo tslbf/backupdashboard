@@ -38,7 +38,10 @@ def main() -> int:
     purge = sub.add_parser("purge")
     purge.add_argument("source", choices=[*ALL_COLLECTORS.keys(), "all"])
     probe = sub.add_parser("probe")
-    probe.add_argument("target", choices=["veeam"])
+    probe.add_argument("target", choices=["veeam", "azure"])
+    probe.add_argument(
+        "--hours", type=int, default=24, help="azure: window to survey (default 24)"
+    )
     protect_cmd = sub.add_parser("protect")
     protect_cmd.add_argument(
         "--machine",
@@ -57,7 +60,7 @@ def main() -> int:
     if args.command == "protect":
         return _protect(args)
     if args.command == "probe":
-        return _probe_veeam()
+        return _probe_veeam() if args.target == "veeam" else _probe_azure(args.hours)
 
     init_db()
 
@@ -245,6 +248,48 @@ def _probe_veeam() -> int:
             worst = 1
     print()
     return worst
+
+
+def _probe_azure(hours: int) -> int:
+    """What is in the vaults, without storing any of it.
+
+    Sixty servers should not produce tens of thousands of job records. This says
+    which of the two reasons it is: jobs nobody counts as a nightly backup (a
+    15-minute transaction log), or history from outside the window because ARM
+    ignored the filter.
+    """
+    from .collectors.azure import survey
+
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    settings = get_settings()
+    if not (settings.azure_tenant_id and settings.azure_client_id):
+        print("Azure is not configured in backend\\.env")
+        return 1
+
+    print(f"\nSurveying the last {hours}h. Nothing is written to the database.")
+    for vault in survey(settings, hours):
+        print(f"\n=== {vault['vault']} ===")
+        if vault.get("error"):
+            print(f"  unreadable: {vault['error']}")
+            continue
+        print(f"  subscription     {vault['subscription']}")
+        print(f"  jobs returned    {vault['jobs']}")
+        print(f"  distinct entities {vault['entities']}")
+        if vault["outside_window"]:
+            print(
+                f"  outside window   {vault['outside_window']}"
+                "   <- ARM ignored $filter; it is paging the whole history"
+            )
+        print("  by management type / backup type:")
+        for kind, total in vault["kinds"].items():
+            print(f"    {total:>8}  {kind}")
+
+    print(
+        "\nA 'Log' row is a transaction-log backup — every 15 minutes per database,\n"
+        "which is what makes the numbers enormous. They are skipped on collection\n"
+        "unless AZURE_INCLUDE_LOG_BACKUPS=true.\n"
+    )
+    return 0
 
 
 def _protect(args) -> int:
