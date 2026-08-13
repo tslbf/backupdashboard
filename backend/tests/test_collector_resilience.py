@@ -97,8 +97,22 @@ class TestVeeamTls:
         assert isinstance(context, ssl.SSLContext)
         assert context.verify_mode == ssl.CERT_NONE
         assert context.check_hostname is False
-        # The script this replaces pinned TLS 1.2; anything older is not offered.
+
+    @pytest.mark.parametrize("verify", [True, False])
+    def test_tls_12_is_the_only_protocol_offered(self, verify):
+        """`SecurityProtocol = Tls12` in the PowerShell means TLS 1.2 and
+        nothing else — it is not a floor.
+
+        Pinning only the minimum, which is what the first attempt at this did,
+        leaves OpenSSL free to open with a TLS 1.3 ClientHello; an older
+        Schannel that cannot parse one resets the connection instead of
+        negotiating down, and the 10054 comes back unchanged. Both ends of the
+        range have to be 1.2.
+        """
+        context = tls_context(verify=verify)
+
         assert context.minimum_version == ssl.TLSVersion.TLSv1_2
+        assert context.maximum_version == ssl.TLSVersion.TLSv1_2
 
     def test_the_security_level_is_lowered_so_older_suites_still_negotiate(self):
         context = tls_context(verify=False)
@@ -110,6 +124,14 @@ class TestVeeamTls:
         )
 
     def test_verification_stays_on_when_asked_for(self):
-        """Setting VEEAM_VERIFY_TLS=true must actually verify — the loosening
-        above is scoped to the self-signed default, not a global downgrade."""
-        assert tls_context(verify=True) is True
+        """VEEAM_VERIFY_TLS=true must actually verify. The loosening above is
+        scoped to the self-signed default, not a global downgrade — and
+        SECLEVEL=1 in particular also accepts weaker certificates, which is the
+        opposite of what someone who installed a real one is asking for."""
+        context = tls_context(verify=True)
+
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
+        assert len(context.get_ciphers()) == len(ssl.create_default_context().get_ciphers()), (
+            "the cipher list should not have been widened in the verified case"
+        )

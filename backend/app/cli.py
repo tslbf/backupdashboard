@@ -10,6 +10,7 @@
   python -m app.cli seed-demo          load demo data (for evaluating the UI)
   python -m app.cli purge <source>     delete one source's events
   python -m app.cli protect            encrypt a secret for .env (Windows DPAPI)
+  python -m app.cli probe veeam        diagnose a Veeam connection (TCP/TLS/HTTP)
 """
 from __future__ import annotations
 
@@ -36,6 +37,8 @@ def main() -> int:
     sub.add_parser("seed-demo")
     purge = sub.add_parser("purge")
     purge.add_argument("source", choices=[*ALL_COLLECTORS.keys(), "all"])
+    probe = sub.add_parser("probe")
+    probe.add_argument("target", choices=["veeam"])
     protect_cmd = sub.add_parser("protect")
     protect_cmd.add_argument(
         "--machine",
@@ -49,8 +52,12 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # Neither of these touches the database — and probe in particular has to
+    # work on a box where the database is the thing that isn't set up yet.
     if args.command == "protect":
         return _protect(args)
+    if args.command == "probe":
+        return _probe_veeam()
 
     init_db()
 
@@ -175,6 +182,69 @@ def _purge(source: str) -> int:
         session.commit()
     print(f"purged {removed} events and {orphans} servers with no remaining history")
     return 0
+
+
+def _probe_veeam() -> int:
+    """Answer 'why 10054?' with a measurement instead of a guess.
+
+    The socket error says the far end hung up and nothing else — not whether it
+    was TLS, the wrong port, or nothing listening. This walks the layers in
+    order and prints what each one did.
+    """
+    from .collectors.veeam import probe_host
+
+    # Its own INFO line would land in the middle of the report, out of order,
+    # since each host is probed in full before anything is printed.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+    settings = get_settings()
+    hosts = settings.veeam_server_list()
+    if not hosts:
+        print("VEEAM_SERVERS is empty in backend\\.env — nothing to probe")
+        return 1
+
+    worst = 0
+    for host in hosts:
+        print(f"\n=== {host}:{settings.veeam_port} ===")
+        result = probe_host(host, settings.veeam_port)
+
+        print(f"  TCP connect      {result['tcp']}")
+        if result["tcp"] != "ok":
+            print(
+                "\n  Nothing is accepting connections on that port. Check the Veeam\n"
+                "  RESTful API service is running and the firewall allows it:\n"
+                f"    Test-NetConnection {host} -Port {settings.veeam_port}"
+            )
+            worst = 1
+            continue
+
+        print("  TLS handshakes:")
+        for attempt in result["attempts"]:
+            mark = "ok  " if attempt["ok"] else "FAIL"
+            print(f"    [{mark}] {attempt['label']}")
+            print(f"           {attempt['detail']}")
+
+        if result["http"]:
+            print(f"  REST service     {result['http']}")
+            print("                   (401 is a pass — the API answered)")
+
+        if not any(a["ok"] for a in result["attempts"]):
+            print(
+                "\n  The port accepts connections but no handshake completes, so this\n"
+                "  is TLS. If even 'OpenSSL defaults' fails, the service on that port\n"
+                "  may not be speaking TLS at all — check it is the REST API and not\n"
+                "  something else."
+            )
+            worst = 1
+        elif not result["attempts"][0]["ok"]:
+            print(
+                "\n  The collector's own settings failed but something else worked.\n"
+                "  Send this output on — tls_context() needs to match the line that\n"
+                "  succeeded."
+            )
+            worst = 1
+    print()
+    return worst
 
 
 def _protect(args) -> int:

@@ -115,6 +115,7 @@ python -m app.cli report [--date]    print a night's summary; non-zero if proble
 python -m app.cli seed-demo          load the demo estate
 python -m app.cli purge <source>     delete one source's events
 python -m app.cli protect            encrypt a secret for .env (Windows DPAPI)
+python -m app.cli probe veeam        diagnose a Veeam connection: TCP, TLS, REST
 ```
 
 ## Tests

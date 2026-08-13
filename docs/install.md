@@ -244,18 +244,44 @@ the `4060` beside it is the real message. A wrong password gives `18456` with no
 ODBC Driver 18 isn't installed, or `APP_DB_URL` is still the placeholder.
 
 **`[WinError 10054] An existing connection was forcibly closed` from Veeam**
-A TLS handshake reset, despite mentioning nothing about TLS. Handled since
-`tls_context()` pins TLS 1.2 and lowers OpenSSL's security level — the same
-thing the PowerShell got from `ServicePointManager.SecurityProtocol`. If it
-persists, the service may not be listening:
+The far end hung up, and the message says nothing about why. Stop guessing and
+measure it:
 
-```powershell
-Test-NetConnection PGHVEEAM.LBFOSTERCO.COM -Port 9419
+```bat
+.venv\Scripts\python.exe -m app.cli probe veeam
 ```
+
+That walks the layers in order — a plain TCP connect, then each candidate TLS
+handshake, then an unauthenticated REST call — and prints what each one did, so
+the output names the layer that is broken:
+
+- **TCP connect failed** — nothing is listening. Check the Veeam RESTful API
+  service is running and the firewall allows 9419.
+- **every handshake failed** — TLS. If even "OpenSSL defaults" fails, whatever
+  is on that port may not be speaking TLS at all.
+- **the collector's line failed but another succeeded** — `tls_context()` needs
+  to match the line that worked; send the output on.
+- **`REST service HTTP 401`** — a pass. The API answered; the problem is
+  credentials or permissions, not the connection.
+
+Usually this is TLS: Python 3.11 links OpenSSL 3.x, which offers TLS 1.3 by
+default, and an older Windows TLS stack resets rather than negotiating down.
+`tls_context()` pins TLS 1.2 as both the minimum *and* the maximum — the same
+single protocol `ServicePointManager.SecurityProtocol = Tls12` gave the
+PowerShell — and lowers OpenSSL's security level so the older cipher suites
+still negotiate.
 
 **Azure runs for many minutes**
 Expected on a first run: ARM pages one job per request. Watch the per-vault
 progress in the live log. Lower `AZURE_LOOKBACK_HOURS` to shorten it.
+
+**`Violation of UNIQUE KEY constraint 'uq_event_source_server_start'`**
+Fixed — pull and re-run. SQL Server's `DATETIME` keeps only 1/300 of a second
+and rounds to it, so a run collected at `20:10:38.239838` was stored as
+`...38.240`; the next collection looked for the value it had, found nothing, and
+tried to insert the same run again. Runs are now keyed by their start time to
+the second, and rows written before that rule are matched and converged as their
+servers are re-collected. Nothing needs cleaning up by hand.
 
 **A collector stuck on "running"**
 It was in flight when the app restarted, so its outcome was never written.

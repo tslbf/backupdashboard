@@ -33,7 +33,7 @@ PAGE_SIZE = 500
 LOG_PAGE_SIZE = 500
 
 
-def tls_context(verify: bool) -> ssl.SSLContext | bool:
+def tls_context(verify: bool) -> ssl.SSLContext:
     """The TLS settings a Veeam appliance actually accepts.
 
     Python 3.11 links OpenSSL 3.x, whose defaults are stricter than the Windows
@@ -43,24 +43,110 @@ def tls_context(verify: bool) -> ssl.SSLContext | bool:
     host` — with nothing about certificates in it, which sends you looking in
     the wrong place entirely.
 
-    The PowerShell this replaces pinned TLS 1.2 explicitly
-    (ServicePointManager.SecurityProtocol) and had no equivalent problem. This
-    does the same, and drops OpenSSL's security level to 1 so the older cipher
-    suites and smaller DH parameters those appliances offer are still on the
-    table.
+    The PowerShell this replaces set
+    `ServicePointManager.SecurityProtocol = Tls12` and had no such problem.
+    Note what that does: it makes TLS 1.2 the *only* protocol offered, not the
+    minimum. OpenSSL 3 offers 1.3 by default, and an older Schannel that cannot
+    parse a 1.3 ClientHello resets the connection rather than negotiating down —
+    so pinning only the floor, as this did at first, changes nothing. Both ends
+    of the range have to be TLS 1.2 to match what the script did.
+
+    Security level 1 is the second half: SECLEVEL=2 (the OpenSSL 3 default)
+    refuses the older suites and smaller DH parameters these appliances offer.
+    That loosening is scoped to the unverified case — the self-signed default —
+    because it also permits weaker certificates, and someone who has put a
+    trusted certificate on the appliance is asking for the opposite.
+
+    Use `python -m app.cli probe veeam` to find out which of these an
+    unreachable appliance actually needs, rather than guessing.
     """
-    if verify:
-        return True
     context = ssl.create_default_context()
-    context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
     context.minimum_version = ssl.TLSVersion.TLSv1_2
-    try:
-        # SECLEVEL=2 (the OpenSSL 3 default) rejects what these appliances offer.
-        context.set_ciphers("DEFAULT@SECLEVEL=1")
-    except ssl.SSLError:  # a build without the legacy suites — nothing to loosen
-        pass
+    context.maximum_version = ssl.TLSVersion.TLSv1_2
+    if not verify:
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        try:
+            context.set_ciphers("DEFAULT@SECLEVEL=1")
+        except ssl.SSLError:  # a build without the legacy suites — nothing to loosen
+            pass
     return context
+
+def _probe_contexts() -> list[tuple[str, ssl.SSLContext]]:
+    """The handshakes worth trying, narrowest first."""
+
+    def relaxed(minimum: ssl.TLSVersion, maximum: ssl.TLSVersion | None, ciphers: str | None):
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        ctx.minimum_version = minimum
+        if maximum is not None:
+            ctx.maximum_version = maximum
+        if ciphers:
+            try:
+                ctx.set_ciphers(ciphers)
+            except ssl.SSLError:
+                pass
+        return ctx
+
+    v12 = ssl.TLSVersion.TLSv1_2
+    return [
+        ("TLS 1.2 only, relaxed ciphers  (what the collector uses)", tls_context(verify=False)),
+        ("TLS 1.2 only, default ciphers", relaxed(v12, v12, None)),
+        ("TLS 1.2 or newer, relaxed ciphers", relaxed(v12, None, "DEFAULT@SECLEVEL=1")),
+        ("OpenSSL defaults, unverified", relaxed(ssl.TLSVersion.MINIMUM_SUPPORTED, None, None)),
+        ("certificate verification on", tls_context(verify=True)),
+    ]
+
+
+def probe_host(host: str, port: int, timeout: float = 10.0) -> dict:
+    """Find out what a VBR appliance will actually negotiate.
+
+    `[WinError 10054]` says only that the far end hung up; it does not say
+    whether that was TLS, the wrong port, or nothing listening at all. This
+    separates those: it opens a plain socket first, then tries each handshake in
+    turn, then — if one works — asks the REST API a question it can answer
+    without credentials. Every step reports on its own, so the output says which
+    layer is the broken one.
+    """
+    import socket
+
+    host = host.strip().replace("https://", "").replace("http://", "")
+    result: dict = {"host": host, "port": port, "tcp": None, "attempts": [], "http": None}
+
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            result["tcp"] = "ok"
+    except Exception as exc:  # noqa: BLE001
+        result["tcp"] = f"failed: {exc}"
+        return result
+
+    working: ssl.SSLContext | None = None
+    for label, context in _probe_contexts():
+        try:
+            with socket.create_connection((host, port), timeout=timeout) as raw:
+                with context.wrap_socket(raw, server_hostname=host) as tls:
+                    result["attempts"].append(
+                        {"label": label, "ok": True, "detail": f"{tls.version()}  {tls.cipher()[0]}"}
+                    )
+                    if working is None:
+                        working = context
+        except Exception as exc:  # noqa: BLE001
+            result["attempts"].append(
+                {"label": label, "ok": False, "detail": f"{type(exc).__name__}: {exc}"}
+            )
+
+    if working is not None:
+        # A 401 here is a pass: it proves the REST service is the thing on the
+        # other end, which a bare handshake does not.
+        try:
+            with httpx.Client(verify=working, timeout=timeout) as client:
+                resp = client.get(f"https://{host}:{port}/api/v1/serverInfo")
+                result["http"] = f"HTTP {resp.status_code}"
+        except Exception as exc:  # noqa: BLE001
+            result["http"] = f"failed: {type(exc).__name__}: {exc}"
+    return result
+
 
 # Fields on a log line that name the object being processed, cheapest first.
 _NAME_FIELDS = ("objectName", "entityName", "vmName", "computerName", "objectDisplayName")

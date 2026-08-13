@@ -112,6 +112,15 @@ T-SQL rejects outright — its `IS` takes only NULL. Every page 500'd.
   the test passes vacuously.
 - SQL Server caps a statement at 2100 parameters, which is why `refresh_all`
   chunks its date list rather than passing a year at once.
+- **`DATETIME` keeps 1/300 of a second and rounds to it.** `20:10:38.239838`
+  comes back as `20:10:38.240`. That made the column's precision part of the
+  natural key: the value looked up never matched the value stored, so every
+  re-collection re-inserted and the unique constraint rejected it. SQLite stores
+  what it is handed, so dev and the whole suite were clean. **A run is now keyed
+  by its start time to the second** — `ingest.to_second` truncates on write and
+  `upsert_event` matches on the whole second, which also finds rows written
+  before the rule and converges them. Same class of bug as `IS 0`: valid SQLite,
+  wrong on SQL Server, invisible until AZUSCCM01.
 
 The general rule: anything that touches the database is unproven until it has
 either run against SQL Server or been compiled against the mssql dialect.
@@ -223,9 +232,15 @@ Backup-specific decisions on top of the theme:
 - **Veeam TLS**: Python 3.11 links OpenSSL 3.x, whose defaults an older Windows
   TLS stack won't negotiate — it drops the connection and you get
   `[WinError 10054] An existing connection was forcibly closed`, which mentions
-  nothing about TLS. `veeam.tls_context()` pins TLS 1.2 and `SECLEVEL=1`, which
-  is what the PowerShell got from `ServicePointManager.SecurityProtocol`.
-  Verification stays fully on when `VEEAM_VERIFY_TLS=true`.
+  nothing about TLS. `veeam.tls_context()` pins TLS 1.2 as both the **minimum
+  and the maximum**: `SecurityProtocol = Tls12` in the PowerShell offers 1.2 and
+  nothing else, and an old Schannel resets rather than negotiating down from a
+  1.3 ClientHello — so pinning only the floor, which is what the first attempt
+  at this did, changes nothing and the 10054 comes back unchanged. `SECLEVEL=1`
+  is the other half, scoped to the unverified case because it also accepts
+  weaker certificates. **`cli probe veeam`** walks TCP → each candidate
+  handshake → an unauthenticated REST call and prints what each layer did, so
+  the next one of these is measured instead of guessed at.
 - **Legacy import**: those scripts wrote **Eastern local time**, not UTC, so the
   importer localizes each row individually (the offset depends on whether that
   timestamp was EST or EDT). The fall-back hour is genuinely ambiguous; `fold=0`

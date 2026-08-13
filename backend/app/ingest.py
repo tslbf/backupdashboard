@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
 
@@ -36,6 +36,33 @@ def normalize_name(raw: str | None) -> str | None:
     if head and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", head):
         name = head
     return name.upper()[:128] or None
+
+
+def to_second(value: datetime | None) -> datetime | None:
+    """Drop the sub-second part of a timestamp.
+
+    A backup run is identified by (source, server, start time), and that key is
+    an equality test on a datetime column — which makes the column's precision
+    part of the key, and the two databases disagree about it.
+
+    SQL Server's DATETIME keeps 1/300 of a second and *rounds* what it is given:
+    hand it 20:10:38.239838 and 20:10:38.240 is what comes back. So the value
+    searched for is never the value stored, the row is never found, every
+    re-collection tries to INSERT the same run again, and the unique constraint
+    rejects it:
+
+        Violation of UNIQUE KEY constraint 'uq_event_source_server_start'.
+        The duplicate key value is (azure, 55, 2026-08-12 20:10:38.240)
+
+    SQLite stores exactly what it is handed, so the identical code round-trips
+    perfectly in dev and every test passes.
+
+    Nobody identifies a backup run more precisely than the second, so the second
+    is the key. `upsert_event` writes truncated values and matches on the whole
+    second, which also picks up rows written before this rule existed — whatever
+    the database happened to round them to.
+    """
+    return value.replace(microsecond=0) if value is not None else None
 
 
 class ServerCache:
@@ -129,11 +156,19 @@ def upsert_event(
     Matches on (source, server, start_utc) — the same natural key the PowerShell
     MERGE used, so a collector run and a legacy import of the same job converge
     on one row instead of duplicating it.
+
+    The match is on the whole second (see `to_second`): the stored value has
+    been through the database's own datetime precision and may not be the value
+    that was handed to it.
     """
     from .models import BackupEvent
 
+    # Before truncating — the real duration, not the truncated one.
     if duration_sec is None and start_utc and end_utc:
         duration_sec = max(0, int((end_utc - start_utc).total_seconds()))
+
+    start_utc = to_second(start_utc)
+    end_utc = to_second(end_utc)
 
     tz = effective_timezone(server, cache.source_config(), cache._settings)
     stamp = report_date_str(end_utc, tz, effective_cutoff(server, cache._settings))
@@ -143,11 +178,17 @@ def upsert_event(
         .filter(
             BackupEvent.source == source,
             BackupEvent.server_id == server.id,
-            BackupEvent.start_utc == start_utc,
+            BackupEvent.start_utc >= start_utc,
+            BackupEvent.start_utc < start_utc + timedelta(seconds=1),
         )
-        .one_or_none()
+        # Deterministic when an older row carries a rounded sub-second value.
+        .order_by(BackupEvent.start_utc, BackupEvent.id)
+        .first()
     )
     if existing is not None:
+        # Converge the row onto the truncated key, so an estate that predates
+        # this rule heals itself as its servers are re-collected.
+        existing.start_utc = start_utc
         existing.end_utc = end_utc
         existing.duration_sec = duration_sec
         existing.outcome = outcome
