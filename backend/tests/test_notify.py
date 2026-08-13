@@ -285,3 +285,46 @@ class TestSummaryHasNoUnknownOutcome:
 
         assert data["servers_total"] == 0
         assert data["worst_outcome"] == "unknown"
+
+
+class TestUnknownApiPathsDoNotServeThePage:
+    """A path under /api that has no route must 404, not fall through to the
+    SPA's index.html.
+
+    It did, and answered HTTP 200 with a page of HTML — so curling the wrong
+    endpoint, or the right endpoint on the wrong port, looked like it worked.
+    That is a debugging trap with no upside: no client-side route lives under
+    /api, so nothing legitimate needs the fallback there.
+    """
+
+    def _client(self):
+        from fastapi.testclient import TestClient
+
+        from app.main import app
+
+        return TestClient(app)
+
+    def test_an_unknown_api_path_is_a_404(self):
+        with self._client() as client:
+            response = client.get("/api/does-not-exist")
+
+        assert response.status_code == 404
+        assert "text/html" not in response.headers.get("content-type", "")
+
+    def test_the_other_app_s_endpoint_is_a_404_here(self):
+        """The exact confusion: /api/backup-summary belongs to the asset
+        dashboard on :8000, not to this app on :8010."""
+        with self._client() as client:
+            assert client.get("/api/backup-summary").status_code == 404
+
+    def test_a_real_api_path_still_works(self):
+        with self._client() as client:
+            assert client.get("/api/summary").status_code == 200
+
+    def test_a_client_side_route_still_gets_the_page(self):
+        """The fallback's actual job — /servers is a React route, not a file."""
+        with self._client() as client:
+            response = client.get("/servers")
+
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]

@@ -5,7 +5,7 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -57,6 +57,12 @@ if FRONTEND_DIST.exists():
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str):
+        # An unknown /api/* path is a mistake, not a client-side route. Without
+        # this it falls through to index.html and answers HTTP 200 with a page
+        # of HTML, so curling the wrong endpoint — or the right endpoint on the
+        # wrong port — looks like it worked. That cost an afternoon.
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail=f"no such endpoint: /{full_path}")
         candidate = FRONTEND_DIST / full_path
         if full_path and candidate.is_file():
             return FileResponse(candidate)

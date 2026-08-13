@@ -72,6 +72,15 @@ and a note here.
 BACKUP_DASHBOARD_URL=http://AZUSCCM01:8010
 ```
 
+**The two ports are different and easy to mix up.** The asset dashboard serves
+on **8000**, this one on **8010**. So the setting above points *at this app*,
+and the endpoint that proves it is working is the asset dashboard's:
+
+```
+curl http://localhost:8000/api/backup-summary     <- asset dashboard's proxy
+curl http://localhost:8010/api/summary            <- this app, directly
+```
+
 Its Overview then grows a one-line strip above the coverage charts —
 *"42 of 49 protected · night of 2026-08-13 · 8 need attention →"* — linking out
 to this dashboard. Blank, and the strip does not render at all.
@@ -96,7 +105,7 @@ Same-origin is simplest if both apps sit behind one host. A browser calling this
 API directly from another origin needs that origin in `CORS_ORIGINS` here:
 
 ```
-CORS_ORIGINS=http://localhost:5173,http://AZUSCCM01:8020
+CORS_ORIGINS=http://localhost:5173,http://AZUSCCM01:8000
 ```
 
 ### A drop-in tile
