@@ -279,13 +279,33 @@ version and prints the setting to use:
 >>> Put this in backend\.env:   VEEAM_TLS_VERSION=1.0
 ```
 
-If **no** handshake completes, not even TLS 1.0, whatever is on that port is
-probably not the REST API. Older deployments used Enterprise Manager's API
-instead, on a different port:
+**Read the exception type, not the fact of the failure.** It carries the whole
+conclusion:
 
-```bat
-.venv\Scripts\python.exe -m app.cli probe veeam --port 9398
-```
+| What the probe prints | What it means |
+|---|---|
+| `SSLError: ...ALERT_PROTOCOL_VERSION` | the server read the hello and objected — a real TLS mismatch, fixable with `VEEAM_TLS_VERSION` |
+| `SSLCertVerificationError` | the handshake worked; only trust failed — `VEEAM_VERIFY_TLS` |
+| `SSLError: WRONG_VERSION_NUMBER` | that port is not TLS |
+| `ConnectionResetError` **on every attempt** | the server never sent a TLS byte. **Not a TLS problem** |
+
+That last row is the one that wastes days. A server that dislikes a ClientHello
+answers with an *alert* — it has to read the hello to object to it. A reset
+means nothing was ever negotiated, so no combination of versions or ciphers will
+help. Something is accepting the TCP connection and killing it:
+
+1. **A firewall in the path.** Many complete the TCP handshake themselves and
+   reset once real data arrives — exactly this shape. A port that **times out**
+   rather than being refused is more evidence: a host with nothing listening
+   refuses immediately, while silence means the packets are being dropped.
+2. The Veeam RESTful API service is not running, and something else in the path
+   is completing the connection.
+3. The service is running but only accepts certain sources.
+
+The probe prints a scan of Veeam's known ports in this case, and the decisive
+test is to **run the same probe from the machine the PowerShell script runs
+on**. Working there and not here makes it the network path, not the code — and
+the fix is to extend that host's firewall rule to this one.
 
 **Azure runs for many minutes, or the record count runs into the tens of thousands**
 Sixty servers should produce a few hundred jobs in a 96-hour window, not 30,000.

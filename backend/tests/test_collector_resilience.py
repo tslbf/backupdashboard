@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from app.collectors.azure import MAX_PAGES, AzureCollector
-from app.collectors.veeam import tls_context
+from app.collectors.veeam import classify_handshake_failure, tls_context
 
 
 class TestArmPaging:
@@ -174,3 +174,46 @@ class TestVeeamTls:
         assert len(context.get_ciphers()) == len(ssl.create_default_context().get_ciphers()), (
             "the cipher list should not have been widened in the verified case"
         )
+
+
+class TestReadingAFailedHandshake:
+    """Whether a failed handshake says anything about TLS at all.
+
+    This is the distinction that ended a three-round hunt at LB Foster. Both
+    VBR hosts refused every protocol from 1.0 to 1.3, which reads like a
+    catastrophic TLS mismatch — but the exception was `ConnectionResetError`
+    every time, not `SSLError`. A server that dislikes a ClientHello answers
+    with an *alert*; it has to read the hello to object to it. A reset means it
+    never sent a TLS byte, so nothing about TLS was ever negotiated, and no
+    amount of changing versions or ciphers can help.
+    """
+
+    def test_a_reset_is_not_a_tls_verdict(self):
+        assert classify_handshake_failure(ConnectionResetError(10054, "forcibly closed")) == "reset"
+
+    def test_an_alert_is(self):
+        """`TLSV1_ALERT_PROTOCOL_VERSION` — the server read the hello and said
+        no. That one really is fixable with VEEAM_TLS_VERSION."""
+        assert classify_handshake_failure(ssl.SSLError("tlsv1 alert protocol version")) == "tls"
+
+    def test_a_certificate_failure_is_its_own_thing(self):
+        """The handshake succeeded; only trust failed. Distinct because the fix
+        is VEEAM_VERIFY_TLS, not a protocol change."""
+        assert classify_handshake_failure(ssl.SSLCertVerificationError("self-signed")) == "cert"
+
+    def test_a_silent_close_counts_as_a_reset_despite_being_an_sslerror(self):
+        """SSLEOFError subclasses SSLError, but it means "closed without saying
+        anything" — which belongs with the resets, not the alerts."""
+        assert isinstance(ssl.SSLEOFError(), ssl.SSLError)
+        assert classify_handshake_failure(ssl.SSLEOFError()) == "reset"
+
+    def test_a_timeout_is_neither(self):
+        assert classify_handshake_failure(TimeoutError()) == "timeout"
+
+    def test_the_lb_foster_signature(self):
+        """Every attempt reset, nothing plain-HTTP: not a TLS problem."""
+        attempts = [
+            {"ok": False, "kind": classify_handshake_failure(ConnectionResetError(10054, "x"))}
+            for _ in range(6)
+        ]
+        assert all(a["kind"] == "reset" for a in attempts)

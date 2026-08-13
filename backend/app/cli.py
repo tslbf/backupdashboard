@@ -199,7 +199,7 @@ def _probe_veeam(port: int | None = None) -> int:
     was TLS, the wrong protocol version, the wrong port, or a service that is
     not this one. This walks the layers in order and prints what each did.
     """
-    from .collectors.veeam import probe_host
+    from .collectors.veeam import probe_host, scan_ports
 
     # Its own INFO line would land in the middle of the report, out of order,
     # since each host is probed in full before anything is printed.
@@ -219,13 +219,24 @@ def _probe_veeam(port: int | None = None) -> int:
 
         print(f"  TCP connect      {result['tcp']}")
         if result["tcp"] != "ok":
-            print(
-                "\n  Nothing is accepting connections on that port. Check the Veeam\n"
-                "  RESTful API service is running and the firewall allows it:\n"
-                f"    Test-NetConnection {host} -Port {port}\n"
-                "  If that service is not installed, Enterprise Manager's API on 9398\n"
-                "  may be what the old script used:  probe veeam --port 9398"
-            )
+            if "timed out" in result["tcp"]:
+                # Dropped, not refused. A host with nothing on the port answers
+                # immediately with a reset; silence is a firewall.
+                print(
+                    "\n  Timed out rather than refused — the packets are being dropped,\n"
+                    "  which is a firewall rather than the host. A machine with nothing\n"
+                    "  listening on a port refuses the connection straight away."
+                )
+            else:
+                print(
+                    "\n  Nothing is accepting connections there. Check the Veeam RESTful\n"
+                    f"  API service is running:  Test-NetConnection {host} -Port {port}"
+                )
+            print(f"\n  Ports on {host}:")
+            for row in scan_ports(host):
+                print(f"    {row['port']:<6} {row['tcp']:<44} {row['description']}")
+                if row["tls"]:
+                    print(f"           TLS: {row['tls']}")
             worst = 1
             continue
 
@@ -242,15 +253,42 @@ def _probe_veeam(port: int | None = None) -> int:
             print(f"  plain HTTP       {result['plain_http']}")
 
         if not any(a["ok"] for a in result["attempts"]):
-            print(
-                "\n  The port accepts connections but not one handshake completes —\n"
-                "  not even TLS 1.0. Whatever is listening there is probably not the\n"
-                "  Veeam REST API. Worth trying:\n"
-                "    probe veeam --port 9398      (Enterprise Manager's API)\n"
-                "  and confirming on the VBR server that the 'Veeam RESTful API'\n"
-                "  service is running and set to that port."
-            )
             worst = 1
+            if all(a.get("kind") == "reset" for a in result["attempts"]):
+                # The decisive detail, and it is in the exception type: a
+                # protocol or cipher mismatch is answered with a TLS *alert*.
+                # A reset means the server never sent a TLS byte at all.
+                print(
+                    "\n  >>> This is not a TLS problem.\n\n"
+                    "  Every attempt was reset before the server sent a single TLS\n"
+                    "  byte — a version or cipher mismatch answers with an alert, not\n"
+                    "  a reset. It is not plain HTTP either. So something accepts the\n"
+                    "  TCP connection and then kills it the moment data arrives.\n\n"
+                    "  In order of likelihood:\n"
+                    "   1. A firewall between this host and the appliance. Many\n"
+                    "      complete the TCP handshake themselves and reset once real\n"
+                    "      data arrives — which is exactly this shape. A port that\n"
+                    "      TIMES OUT rather than being refused is more evidence of\n"
+                    "      one: see the port scan below.\n"
+                    "   2. The Veeam RESTful API service is not running, and\n"
+                    "      something else in the path is completing the connection.\n"
+                    "   3. The service is running but only accepts certain sources.\n\n"
+                    "  The decisive test: run this same probe from the machine the\n"
+                    "  PowerShell script runs on. Working there and not here makes it\n"
+                    "  the network path, not the code — and the fix is to extend that\n"
+                    "  host's firewall rule to this one."
+                )
+            else:
+                print(
+                    "\n  The port accepts connections but not one handshake completes,\n"
+                    "  not even TLS 1.0. Whatever is listening is probably not the\n"
+                    "  Veeam REST API — see the port scan below."
+                )
+            print(f"\n  Ports on {host}:")
+            for row in scan_ports(host):
+                print(f"    {row['port']:<6} {row['tcp']:<44} {row['description']}")
+                if row["tls"]:
+                    print(f"           TLS: {row['tls']}")
         elif not result["attempts"][0]["ok"]:
             print(
                 f"\n  >>> Put this in backend\\.env:   {result['recommend']}\n"

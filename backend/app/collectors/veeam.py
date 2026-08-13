@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import logging
 import re
+import socket
 import ssl
 from datetime import datetime, timedelta, timezone
+from socket import timeout as socket_timeout
 
 import httpx
 from sqlalchemy.orm import Session
@@ -112,6 +114,34 @@ def _probe_contexts(configured: str) -> list[tuple[str, ssl.SSLContext, str]]:
     return candidates
 
 
+def classify_handshake_failure(exc: BaseException) -> str:
+    """Whether a failed handshake says anything about TLS.
+
+    This is the distinction that matters, and it is carried entirely by the
+    exception type:
+
+    - `tls`   — the server sent a TLS alert. It read the ClientHello, disliked
+                something in it, and said so. A version or cipher problem.
+    - `cert`  — the handshake worked; the certificate was not trusted.
+    - `reset` — the server sent no TLS bytes at all and dropped the connection.
+                A protocol mismatch produces an alert, not a reset, so this is
+                not a TLS problem: something is killing the connection.
+    """
+    if isinstance(exc, ssl.SSLCertVerificationError):
+        return "cert"
+    # SSLEOFError is an SSLError, but it means "closed without saying anything",
+    # which belongs with the resets rather than with the alerts.
+    if isinstance(exc, ssl.SSLEOFError):
+        return "reset"
+    if isinstance(exc, ssl.SSLError):
+        return "tls"
+    if isinstance(exc, (ConnectionResetError, ConnectionAbortedError, EOFError)):
+        return "reset"
+    if isinstance(exc, (TimeoutError, socket_timeout)):
+        return "timeout"
+    return "other"
+
+
 def probe_host(
     host: str, port: int, configured: str = "1.2", timeout: float = 10.0
 ) -> dict:
@@ -124,8 +154,6 @@ def probe_host(
     question the REST API can answer without credentials, and if none works, a
     plain-HTTP request to find out whether the port is even speaking TLS.
     """
-    import socket
-
     host = host.strip().replace("https://", "").replace("http://", "")
     result: dict = {
         "host": host,
@@ -166,6 +194,7 @@ def probe_host(
                     "label": label,
                     "setting": setting,
                     "ok": False,
+                    "kind": classify_handshake_failure(exc),
                     "detail": f"{type(exc).__name__}: {exc}",
                 }
             )
@@ -192,6 +221,55 @@ def probe_host(
         except Exception as exc:  # noqa: BLE001
             result["plain_http"] = f"not plain HTTP either ({type(exc).__name__})"
     return result
+
+
+# Ports a Veeam installation might be answering on, and what each would mean.
+KNOWN_PORTS = {
+    9419: "VBR RESTful API (v11+) — what this collector wants",
+    9398: "Enterprise Manager RESTful API (older deployments)",
+    9392: "Enterprise Manager web UI",
+    9393: "Enterprise Manager (secondary)",
+    443: "HTTPS — a reverse proxy in front of one of the above",
+}
+
+
+def scan_ports(host: str, timeout: float = 4.0) -> list[dict]:
+    """Which of Veeam's ports this host will talk to, and how far each gets.
+
+    Worth having when a port both accepts connections and refuses to speak:
+    the answer to "is the API somewhere else?" is a measurement, and the
+    difference between *refused* (nothing listening) and *timed out* (a
+    firewall dropping the packets) is itself diagnostic.
+    """
+    host = host.strip().replace("https://", "").replace("http://", "")
+    rows: list[dict] = []
+    for port, description in KNOWN_PORTS.items():
+        row = {"port": port, "description": description, "tcp": None, "tls": None}
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                row["tcp"] = "open"
+        except (TimeoutError, socket_timeout):
+            row["tcp"] = "timed out (dropped — a firewall, not the host)"
+            rows.append(row)
+            continue
+        except ConnectionRefusedError:
+            row["tcp"] = "refused (nothing listening)"
+            rows.append(row)
+            continue
+        except Exception as exc:  # noqa: BLE001
+            row["tcp"] = f"{type(exc).__name__}"
+            rows.append(row)
+            continue
+
+        context = tls_context(verify=False, version="auto")
+        try:
+            with socket.create_connection((host, port), timeout=timeout) as raw:
+                with context.wrap_socket(raw, server_hostname=host) as tls:
+                    row["tls"] = f"{tls.version()}  {tls.cipher()[0]}"
+        except Exception as exc:  # noqa: BLE001
+            row["tls"] = f"{classify_handshake_failure(exc)}: {type(exc).__name__}"
+        rows.append(row)
+    return rows
 
 
 # Fields on a log line that name the object being processed, cheapest first.

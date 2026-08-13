@@ -270,9 +270,16 @@ Backup-specific decisions on top of the theme:
   it also accepts weaker certificates.
   **`cli probe veeam`** is the way to settle it: TCP → every protocol version →
   an unauthenticated REST call, printing the `.env` line for whichever worked.
-  When nothing handshakes it tries plain HTTP on the same port, which
-  distinguishes "TLS is wrong" from "that is not the REST API" — `--port 9398`
-  checks Enterprise Manager's API, which older deployments used instead.
+  **The exception type is the answer, not the failure itself.** A server that
+  dislikes a ClientHello replies with a TLS *alert* — it has to read the hello
+  to object. A bare `ConnectionResetError` means it sent no TLS bytes at all, so
+  the problem is not TLS and no version will fix it;
+  `classify_handshake_failure` splits alert / cert / reset / timeout and the
+  probe says so in as many words. That is what LB Foster's turned out to be:
+  both VBR hosts reset every version from 1.0 to 1.3, weren't plain HTTP, and
+  9398 *timed out* rather than being refused — a firewall completing the TCP
+  handshake and dropping the rest. `scan_ports` covers 9419/9398/9392/9393/443
+  because refused and timed-out mean different things.
 - **Legacy import**: those scripts wrote **Eastern local time**, not UTC, so the
   importer localizes each row individually (the offset depends on whether that
   timestamp was EST or EDT). The fall-back hour is genuinely ambiguous; `fold=0`
