@@ -92,7 +92,7 @@ frontend/src/
   styles.css      assetdashboard's tokens verbatim + a backup-outcome section
   pages/          Overview, Servers, ServerDetail, History, Collectors
 public/lbf-mark.png  brand mark; sits on a light tile, never recoloured
-docs/             timezones.md, deployment-windows.md
+docs/             install.md, timezones.md, deployment-windows.md
 ```
 
 ## SQLite is not SQL Server

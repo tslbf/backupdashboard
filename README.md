@@ -98,7 +98,10 @@ has never once succeeded, and one whose backup silently stopped six nights ago.
 5. Start the app. The scheduler polls each configured source hourly and
    refreshes the rollups at 20 past.
 
-See **[docs/deployment-windows.md](docs/deployment-windows.md)** for SQL Server,
+Starting from nothing on a fresh box? **[docs/install.md](docs/install.md)** is
+the ordered runbook — prerequisites through first real collection, with the
+failures we actually hit listed at the end. See
+**[docs/deployment-windows.md](docs/deployment-windows.md)** for SQL Server,
 running as a service, and the legacy import.
 
 ## CLI
