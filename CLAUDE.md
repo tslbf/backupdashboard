@@ -229,19 +229,33 @@ Backup-specific decisions on top of the theme:
   minutes. `$top` is sent but ARM may ignore it; what makes this survivable is
   progress logging every 25 pages, a repeated-cursor check, and a 2000-page cap.
   Lower `AZURE_LOOKBACK_HOURS` if it drags.
-  **A 60-server estate returned 30,000 jobs.** Two causes, indistinguishable
-  from outside — both now handled, and both *counted* in the per-vault summary
-  line so the next one is a number rather than a hang:
-  - **Transaction-log backups.** SQL/HANA in a VM log-backs-up every 15 minutes
-    per database, and ARM calls each one `operation: Backup` — one database
-    contributes ~384 to a 96h window. Skipped unless
-    `AZURE_INCLUDE_LOG_BACKUPS=true`. The backup type is not a field; it lives
-    in `extendedInfo.propertyBag["Backup Type"]`, and jobs with only one kind
-    (IaaS VM, file share) omit it, so absence must not read as "log".
-  - **`$filter` silently ignored**, which pages the vault's whole retained
-    history. The window is re-applied client-side and the discrepancy logged.
-  `cli probe azure` breaks a window down by management type × backup type
-  without storing anything.
+  **A 58-server estate answered a 24h question with 60,252 jobs.** The cause
+  was the `$filter`, which **this endpoint does not parse as ordinary OData and
+  does not complain about**: a filter it can't read returns HTTP 200 and the
+  vault's entire retained history. Two things about it, both documented,
+  neither guessable:
+  - **`eq` expresses the range.** `startTime eq X and endTime eq Y` means
+    "between X and Y"; `ge`/`le` are ignored.
+  - **The timestamp is `2026-08-09 01:30:00 PM`** — 12-hour, AM/PM,
+    space-separated, not ISO 8601. Built by hand in `_arm_time` because `%p` is
+    locale-dependent and would silently reintroduce the bug on a non-English
+    Windows box.
+  This is what `Get-AzRecoveryServicesBackupJob -From -To` sends, which is why
+  the PowerShell never hit it. Belt and braces on top, because the failure is
+  silent: the window is re-applied client-side, jobs are streamed page by page
+  (`_iter_pages`) rather than accumulated, and paging stops after
+  `STALE_PAGES_BEFORE_STOP` consecutive pages older than the window — but only
+  once an in-window record has been seen, so a vault that ever returns
+  oldest-first is read in full rather than cut short.
+  Transaction-log backups are the *other* way this endpoint inflates: SQL/HANA
+  in a VM log-backs-up every 15 minutes per database and ARM calls each one
+  `operation: Backup`. Skipped unless `AZURE_INCLUDE_LOG_BACKUPS=true`. The
+  backup type is not a field; it lives in
+  `extendedInfo.propertyBag["Backup Type"]`, and jobs with only one kind (IaaS
+  VM, file share) omit it, so absence must not read as "log". LB Foster's
+  estate turned out to have none of these — worth checking before assuming.
+  `cli probe azure` breaks a window down by management type × backup type ×
+  operation without storing anything, and is how the above was settled.
 - **Veeam TLS**: Python 3.11 links OpenSSL 3.x, whose defaults an older Windows
   TLS stack won't negotiate — it drops the connection and you get
   `[WinError 10054] An existing connection was forcibly closed`, which mentions

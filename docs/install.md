@@ -281,14 +281,21 @@ See what is actually in the vaults, without storing any of it:
 
 Two things cause it, and the survey tells them apart:
 
+- **`outside window` with a large count** — ARM ignored the `$filter` and served
+  the vault's entire retained job history. This endpoint's filter is not
+  ordinary OData and gives no sign when it is wrong: `eq` expresses the *range*
+  (`startTime eq X and endTime eq Y` means "between X and Y") and the timestamps
+  are 12-hour with AM/PM, `2026-08-09 01:30:00 PM`. An ISO-8601 `ge`/`le` filter
+  returns HTTP 200 and everything. Fixed since; the window is also enforced
+  client-side, and paging now stops once it is past the window.
 - **A `Log` row with a huge count.** SQL Server and SAP HANA inside a VM back
   their transaction logs up every 15 minutes, per database, and ARM reports each
-  one as `operation: Backup` — there is no server-side filter that separates
-  them from the nightly run. One database contributes ~384 of them to a 96-hour
-  window. These are skipped unless `AZURE_INCLUDE_LOG_BACKUPS=true`.
-- **`outside window`** — ARM ignored the `$filter` and is paging the vault's
-  entire retained history. The window is enforced client-side too, so this is
-  slow rather than wrong, and the per-vault log line reports the count.
+  one as `operation: Backup` — no server-side filter separates them from the
+  nightly run. One database contributes ~384 of them to a 96-hour window. These
+  are skipped unless `AZURE_INCLUDE_LOG_BACKUPS=true`.
+
+If **`by operation`** shows anything other than `Backup`, none of the filter is
+being parsed at all.
 
 Some slowness is inherent regardless: ARM pages backupJobs by a per-job cursor,
 so a busy vault can return roughly one record per round trip. Watch the

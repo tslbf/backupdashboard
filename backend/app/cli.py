@@ -283,11 +283,20 @@ def _probe_azure(hours: int) -> int:
         print("  by management type / backup type:")
         for kind, total in vault["kinds"].items():
             print(f"    {total:>8}  {kind}")
+        print("  by operation:")
+        for operation, total in vault["operations"].items():
+            print(f"    {total:>8}  {operation}")
 
     print(
-        "\nA 'Log' row is a transaction-log backup — every 15 minutes per database,\n"
-        "which is what makes the numbers enormous. They are skipped on collection\n"
-        "unless AZURE_INCLUDE_LOG_BACKUPS=true.\n"
+        "\nReading this:\n"
+        "  'outside window'  ARM ignored the time filter and served the vault's whole\n"
+        "                    retained history. Collection enforces the window itself\n"
+        "                    and stops once it is past it, so this is wasted reading\n"
+        "                    rather than wrong data.\n"
+        "  an operation      other than Backup means the operation clause was ignored\n"
+        "                    too, so none of the filter is being parsed.\n"
+        "  a 'Log' row       transaction-log backups, every 15 minutes per database.\n"
+        "                    Skipped on collection unless AZURE_INCLUDE_LOG_BACKUPS=true.\n"
     )
     return 0
 
