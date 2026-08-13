@@ -74,6 +74,13 @@ class Settings(BaseSettings):
     veeam_port: int = 9419
     # Veeam ships a self-signed cert by default; this is the documented escape.
     veeam_verify_tls: bool = False
+    # The single TLS protocol to offer — 1.0, 1.1, 1.2, 1.3, or "auto" to leave
+    # OpenSSL's own range alone. Same idea as the PowerShell's
+    # `ServicePointManager.SecurityProtocol = Tls12`: name one and only that one
+    # is offered, because an older Schannel resets the connection rather than
+    # negotiating down from a hello it cannot parse.
+    # `python -m app.cli probe veeam` names the one an appliance accepts.
+    veeam_tls_version: str = "1.2"
 
     # --- N-able Cove (Backup Manager JSON-RPC) ---------------------------------
     nable_endpoint: str = "https://api.backup.management/jsonapi"

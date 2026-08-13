@@ -99,7 +99,7 @@ class TestVeeamTls:
         assert context.check_hostname is False
 
     @pytest.mark.parametrize("verify", [True, False])
-    def test_tls_12_is_the_only_protocol_offered(self, verify):
+    def test_tls_12_is_the_only_protocol_offered_by_default(self, verify):
         """`SecurityProtocol = Tls12` in the PowerShell means TLS 1.2 and
         nothing else — it is not a floor.
 
@@ -113,6 +113,45 @@ class TestVeeamTls:
 
         assert context.minimum_version == ssl.TLSVersion.TLSv1_2
         assert context.maximum_version == ssl.TLSVersion.TLSv1_2
+
+    @pytest.mark.parametrize(
+        "version,expected",
+        [
+            ("1.0", ssl.TLSVersion.TLSv1),
+            ("1.1", ssl.TLSVersion.TLSv1_1),
+            ("1.2", ssl.TLSVersion.TLSv1_2),
+            ("1.3", ssl.TLSVersion.TLSv1_3),
+        ],
+    )
+    def test_any_single_version_can_be_pinned(self, version, expected):
+        """A VBR server on an old Windows build may have nothing above TLS 1.0
+        enabled, and the reset it produces is indistinguishable from every
+        other reset. VEEAM_TLS_VERSION is how the probe's answer gets applied
+        without a code change."""
+        context = tls_context(verify=False, version=version)
+
+        assert context.minimum_version == expected
+        assert context.maximum_version == expected
+
+    def test_the_legacy_versions_also_drop_the_security_level(self):
+        """OpenSSL 3 does not merely deprecate TLS 1.0/1.1 — at its default
+        security level it refuses to offer them at all, so pinning the version
+        alone would still send a hello with no usable protocol in it."""
+        for version in ("1.0", "1.1"):
+            ciphers = tls_context(verify=False, version=version).get_ciphers()
+            assert len(ciphers) > len(ssl.create_default_context().get_ciphers()), version
+
+    def test_auto_leaves_openssls_own_range_alone(self):
+        context = tls_context(verify=False, version="auto")
+        default = ssl.create_default_context()
+
+        assert context.minimum_version == default.minimum_version
+        assert context.maximum_version == default.maximum_version
+
+    def test_an_unknown_version_falls_back_to_not_pinning(self):
+        """Rather than raising at collection time over a typo in .env."""
+        context = tls_context(verify=False, version="tls12")
+        assert context.maximum_version == ssl.create_default_context().maximum_version
 
     def test_the_security_level_is_lowered_so_older_suites_still_negotiate(self):
         context = tls_context(verify=False)

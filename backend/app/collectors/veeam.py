@@ -33,7 +33,21 @@ PAGE_SIZE = 500
 LOG_PAGE_SIZE = 500
 
 
-def tls_context(verify: bool) -> ssl.SSLContext:
+# One knob, the same shape as the PowerShell's
+# `ServicePointManager.SecurityProtocol`: name a protocol and that is the only
+# one offered. "auto" leaves OpenSSL's own range alone.
+TLS_VERSIONS = {
+    "1.0": ssl.TLSVersion.TLSv1,
+    "1.1": ssl.TLSVersion.TLSv1_1,
+    "1.2": ssl.TLSVersion.TLSv1_2,
+    "1.3": ssl.TLSVersion.TLSv1_3,
+}
+# OpenSSL 3 will not even offer TLS 1.0/1.1 at its default security level, so
+# asking for one of those implies dropping to 0.
+_LEGACY = (ssl.TLSVersion.TLSv1, ssl.TLSVersion.TLSv1_1)
+
+
+def tls_context(verify: bool, version: str = "1.2") -> ssl.SSLContext:
     """The TLS settings a Veeam appliance actually accepts.
 
     Python 3.11 links OpenSSL 3.x, whose defaults are stricter than the Windows
@@ -43,76 +57,85 @@ def tls_context(verify: bool) -> ssl.SSLContext:
     host` — with nothing about certificates in it, which sends you looking in
     the wrong place entirely.
 
-    The PowerShell this replaces set
-    `ServicePointManager.SecurityProtocol = Tls12` and had no such problem.
-    Note what that does: it makes TLS 1.2 the *only* protocol offered, not the
-    minimum. OpenSSL 3 offers 1.3 by default, and an older Schannel that cannot
-    parse a 1.3 ClientHello resets the connection rather than negotiating down —
-    so pinning only the floor, as this did at first, changes nothing. Both ends
-    of the range have to be TLS 1.2 to match what the script did.
+    `version` pins one protocol as both floor and ceiling, which is what
+    `SecurityProtocol = Tls12` does in the PowerShell — it offers 1.2 and
+    nothing else. Pinning only the floor leaves OpenSSL opening with a TLS 1.3
+    ClientHello, which an old Schannel resets rather than negotiating down.
 
-    Security level 1 is the second half: SECLEVEL=2 (the OpenSSL 3 default)
-    refuses the older suites and smaller DH parameters these appliances offer.
-    That loosening is scoped to the unverified case — the self-signed default —
-    because it also permits weaker certificates, and someone who has put a
-    trusted certificate on the appliance is asking for the opposite.
+    Security level is the other half: SECLEVEL=2 (the OpenSSL 3 default)
+    refuses the older suites and smaller DH parameters these appliances offer,
+    and refuses TLS 1.0/1.1 outright. The loosening is scoped to the unverified
+    case — the self-signed default — because it also permits weaker
+    certificates, and someone who has put a trusted certificate on the
+    appliance is asking for the opposite.
 
-    Use `python -m app.cli probe veeam` to find out which of these an
-    unreachable appliance actually needs, rather than guessing.
+    Which version a given appliance needs is a question with an answer:
+    `python -m app.cli probe veeam` tries them all and names the one that works.
     """
     context = ssl.create_default_context()
-    context.minimum_version = ssl.TLSVersion.TLSv1_2
-    context.maximum_version = ssl.TLSVersion.TLSv1_2
+    pinned = TLS_VERSIONS.get(str(version).strip().lower())
+    if pinned is not None:
+        context.minimum_version = pinned
+        context.maximum_version = pinned
     if not verify:
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
         try:
-            context.set_ciphers("DEFAULT@SECLEVEL=1")
+            context.set_ciphers(f"DEFAULT@SECLEVEL={0 if pinned in _LEGACY else 1}")
         except ssl.SSLError:  # a build without the legacy suites — nothing to loosen
             pass
     return context
 
-def _probe_contexts() -> list[tuple[str, ssl.SSLContext]]:
-    """The handshakes worth trying, narrowest first."""
 
-    def relaxed(minimum: ssl.TLSVersion, maximum: ssl.TLSVersion | None, ciphers: str | None):
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        ctx.minimum_version = minimum
-        if maximum is not None:
-            ctx.maximum_version = maximum
-        if ciphers:
-            try:
-                ctx.set_ciphers(ciphers)
-            except ssl.SSLError:
-                pass
-        return ctx
+def _probe_contexts(configured: str) -> list[tuple[str, ssl.SSLContext, str]]:
+    """Every handshake worth trying, with the setting that would select it.
 
-    v12 = ssl.TLSVersion.TLSv1_2
-    return [
-        ("TLS 1.2 only, relaxed ciphers  (what the collector uses)", tls_context(verify=False)),
-        ("TLS 1.2 only, default ciphers", relaxed(v12, v12, None)),
-        ("TLS 1.2 or newer, relaxed ciphers", relaxed(v12, None, "DEFAULT@SECLEVEL=1")),
-        ("OpenSSL defaults, unverified", relaxed(ssl.TLSVersion.MINIMUM_SUPPORTED, None, None)),
-        ("certificate verification on", tls_context(verify=True)),
+    TLS 1.0 and 1.1 are in here because a VBR server on Windows Server 2012 R2
+    may have nothing newer enabled, and OpenSSL 3 refuses to so much as offer
+    them — so the appliance sees a ClientHello with no protocol in common and
+    hangs up, which is a reset that looks identical to every other reset.
+    """
+    candidates = [
+        (f"TLS {version}", tls_context(False, version), f"VEEAM_TLS_VERSION={version}")
+        for version in ("1.2", "1.1", "1.0", "1.3")
     ]
+    candidates.append(
+        ("OpenSSL defaults, unverified", tls_context(False, "auto"), "VEEAM_TLS_VERSION=auto")
+    )
+    candidates.append(
+        (f"TLS {configured} with certificate verification", tls_context(True, configured),
+         "VEEAM_VERIFY_TLS=true")
+    )
+    # Whatever is configured goes first, so the top line is the one the
+    # collector will actually use.
+    candidates.sort(key=lambda c: c[2] != f"VEEAM_TLS_VERSION={configured}")
+    return candidates
 
 
-def probe_host(host: str, port: int, timeout: float = 10.0) -> dict:
+def probe_host(
+    host: str, port: int, configured: str = "1.2", timeout: float = 10.0
+) -> dict:
     """Find out what a VBR appliance will actually negotiate.
 
     `[WinError 10054]` says only that the far end hung up; it does not say
-    whether that was TLS, the wrong port, or nothing listening at all. This
-    separates those: it opens a plain socket first, then tries each handshake in
-    turn, then — if one works — asks the REST API a question it can answer
-    without credentials. Every step reports on its own, so the output says which
-    layer is the broken one.
+    whether that was TLS, the wrong protocol version, the wrong port, or
+    something that is not the REST API at all. This separates those: a plain
+    socket first, then every candidate handshake, then — if one works — a
+    question the REST API can answer without credentials, and if none works, a
+    plain-HTTP request to find out whether the port is even speaking TLS.
     """
     import socket
 
     host = host.strip().replace("https://", "").replace("http://", "")
-    result: dict = {"host": host, "port": port, "tcp": None, "attempts": [], "http": None}
+    result: dict = {
+        "host": host,
+        "port": port,
+        "tcp": None,
+        "attempts": [],
+        "http": None,
+        "plain_http": None,
+        "recommend": None,
+    }
 
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -122,18 +145,29 @@ def probe_host(host: str, port: int, timeout: float = 10.0) -> dict:
         return result
 
     working: ssl.SSLContext | None = None
-    for label, context in _probe_contexts():
+    for label, context, setting in _probe_contexts(configured):
         try:
             with socket.create_connection((host, port), timeout=timeout) as raw:
                 with context.wrap_socket(raw, server_hostname=host) as tls:
                     result["attempts"].append(
-                        {"label": label, "ok": True, "detail": f"{tls.version()}  {tls.cipher()[0]}"}
+                        {
+                            "label": label,
+                            "setting": setting,
+                            "ok": True,
+                            "detail": f"{tls.version()}  {tls.cipher()[0]}",
+                        }
                     )
                     if working is None:
                         working = context
+                        result["recommend"] = setting
         except Exception as exc:  # noqa: BLE001
             result["attempts"].append(
-                {"label": label, "ok": False, "detail": f"{type(exc).__name__}: {exc}"}
+                {
+                    "label": label,
+                    "setting": setting,
+                    "ok": False,
+                    "detail": f"{type(exc).__name__}: {exc}",
+                }
             )
 
     if working is not None:
@@ -145,6 +179,18 @@ def probe_host(host: str, port: int, timeout: float = 10.0) -> dict:
                 result["http"] = f"HTTP {resp.status_code}"
         except Exception as exc:  # noqa: BLE001
             result["http"] = f"failed: {type(exc).__name__}: {exc}"
+    else:
+        # Nothing handshook. Either the port is not TLS at all, or it is a
+        # service that is not this one — both worth knowing, and neither
+        # distinguishable from "TLS is misconfigured" without asking.
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.get(f"http://{host}:{port}/api/v1/serverInfo")
+                result["plain_http"] = (
+                    f"HTTP {resp.status_code} over plain HTTP — this port is not TLS"
+                )
+        except Exception as exc:  # noqa: BLE001
+            result["plain_http"] = f"not plain HTTP either ({type(exc).__name__})"
     return result
 
 
@@ -259,9 +305,11 @@ class VeeamCollector(Collector):
                 hint = ""
                 if "10054" in str(exc) or "forcibly closed" in str(exc).lower():
                     hint = (
-                        " — the server closed the connection during the TLS handshake. "
-                        "Check the REST service is listening on port "
-                        f"{settings.veeam_port}, and that this host can reach it."
+                        " — the server hung up. That is usually TLS: it is currently "
+                        f"offering only TLS {settings.veeam_tls_version}. Run "
+                        "`python -m app.cli probe veeam`, which tries every protocol "
+                        "version against port "
+                        f"{settings.veeam_port} and names the one this appliance accepts."
                     )
                 log.error("veeam host %s failed: %s%s", host, exc, hint)
                 failures.append(f"{host}: {exc}{hint}")
@@ -287,7 +335,7 @@ class VeeamCollector(Collector):
         with httpx.Client(
             base_url=base,
             timeout=120,
-            verify=tls_context(settings.veeam_verify_tls),
+            verify=tls_context(settings.veeam_verify_tls, settings.veeam_tls_version),
             headers=headers,
         ) as client:
             token_resp = client.post(

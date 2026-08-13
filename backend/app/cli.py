@@ -42,6 +42,11 @@ def main() -> int:
     probe.add_argument(
         "--hours", type=int, default=24, help="azure: window to survey (default 24)"
     )
+    probe.add_argument(
+        "--port",
+        type=int,
+        help="veeam: override the port (9419 is the VBR REST API, 9398 Enterprise Manager)",
+    )
     protect_cmd = sub.add_parser("protect")
     protect_cmd.add_argument(
         "--machine",
@@ -60,7 +65,7 @@ def main() -> int:
     if args.command == "protect":
         return _protect(args)
     if args.command == "probe":
-        return _probe_veeam() if args.target == "veeam" else _probe_azure(args.hours)
+        return _probe_veeam(args.port) if args.target == "veeam" else _probe_azure(args.hours)
 
     init_db()
 
@@ -187,12 +192,12 @@ def _purge(source: str) -> int:
     return 0
 
 
-def _probe_veeam() -> int:
+def _probe_veeam(port: int | None = None) -> int:
     """Answer 'why 10054?' with a measurement instead of a guess.
 
     The socket error says the far end hung up and nothing else — not whether it
-    was TLS, the wrong port, or nothing listening. This walks the layers in
-    order and prints what each one did.
+    was TLS, the wrong protocol version, the wrong port, or a service that is
+    not this one. This walks the layers in order and prints what each did.
     """
     from .collectors.veeam import probe_host
 
@@ -205,18 +210,21 @@ def _probe_veeam() -> int:
     if not hosts:
         print("VEEAM_SERVERS is empty in backend\\.env — nothing to probe")
         return 1
+    port = port or settings.veeam_port
 
     worst = 0
     for host in hosts:
-        print(f"\n=== {host}:{settings.veeam_port} ===")
-        result = probe_host(host, settings.veeam_port)
+        print(f"\n=== {host}:{port} ===")
+        result = probe_host(host, port, settings.veeam_tls_version)
 
         print(f"  TCP connect      {result['tcp']}")
         if result["tcp"] != "ok":
             print(
                 "\n  Nothing is accepting connections on that port. Check the Veeam\n"
                 "  RESTful API service is running and the firewall allows it:\n"
-                f"    Test-NetConnection {host} -Port {settings.veeam_port}"
+                f"    Test-NetConnection {host} -Port {port}\n"
+                "  If that service is not installed, Enterprise Manager's API on 9398\n"
+                "  may be what the old script used:  probe veeam --port 9398"
             )
             worst = 1
             continue
@@ -224,28 +232,33 @@ def _probe_veeam() -> int:
         print("  TLS handshakes:")
         for attempt in result["attempts"]:
             mark = "ok  " if attempt["ok"] else "FAIL"
-            print(f"    [{mark}] {attempt['label']}")
+            print(f"    [{mark}] {attempt['label']:<38}  {attempt['setting']}")
             print(f"           {attempt['detail']}")
 
         if result["http"]:
             print(f"  REST service     {result['http']}")
             print("                   (401 is a pass — the API answered)")
+        if result["plain_http"]:
+            print(f"  plain HTTP       {result['plain_http']}")
 
         if not any(a["ok"] for a in result["attempts"]):
             print(
-                "\n  The port accepts connections but no handshake completes, so this\n"
-                "  is TLS. If even 'OpenSSL defaults' fails, the service on that port\n"
-                "  may not be speaking TLS at all — check it is the REST API and not\n"
-                "  something else."
+                "\n  The port accepts connections but not one handshake completes —\n"
+                "  not even TLS 1.0. Whatever is listening there is probably not the\n"
+                "  Veeam REST API. Worth trying:\n"
+                "    probe veeam --port 9398      (Enterprise Manager's API)\n"
+                "  and confirming on the VBR server that the 'Veeam RESTful API'\n"
+                "  service is running and set to that port."
             )
             worst = 1
         elif not result["attempts"][0]["ok"]:
             print(
-                "\n  The collector's own settings failed but something else worked.\n"
-                "  Send this output on — tls_context() needs to match the line that\n"
-                "  succeeded."
+                f"\n  >>> Put this in backend\\.env:   {result['recommend']}\n"
+                "      What the collector offers now was refused; that was accepted."
             )
             worst = 1
+        else:
+            print("\n  The collector's current TLS settings work against this host.")
     print()
     return worst
 

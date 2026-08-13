@@ -264,12 +264,28 @@ the output names the layer that is broken:
 - **`REST service HTTP 401`** — a pass. The API answered; the problem is
   credentials or permissions, not the connection.
 
-Usually this is TLS: Python 3.11 links OpenSSL 3.x, which offers TLS 1.3 by
-default, and an older Windows TLS stack resets rather than negotiating down.
-`tls_context()` pins TLS 1.2 as both the minimum *and* the maximum — the same
-single protocol `ServicePointManager.SecurityProtocol = Tls12` gave the
-PowerShell — and lowers OpenSSL's security level so the older cipher suites
-still negotiate.
+Usually this is TLS. Python 3.11 links OpenSSL 3.x, which offers TLS 1.3 by
+default and will not offer TLS 1.0/1.1 at all; an older Windows TLS stack resets
+rather than negotiating with a hello it cannot parse. The collector offers a
+single protocol, the way `ServicePointManager.SecurityProtocol = Tls12` did for
+the PowerShell — `VEEAM_TLS_VERSION`, default `1.2`. The probe tries every
+version and prints the setting to use:
+
+```
+[FAIL] TLS 1.2                    VEEAM_TLS_VERSION=1.2
+[ok  ] TLS 1.0                    VEEAM_TLS_VERSION=1.0
+       TLSv1  AES256-SHA
+
+>>> Put this in backend\.env:   VEEAM_TLS_VERSION=1.0
+```
+
+If **no** handshake completes, not even TLS 1.0, whatever is on that port is
+probably not the REST API. Older deployments used Enterprise Manager's API
+instead, on a different port:
+
+```bat
+.venv\Scripts\python.exe -m app.cli probe veeam --port 9398
+```
 
 **Azure runs for many minutes, or the record count runs into the tens of thousands**
 Sixty servers should produce a few hundred jobs in a 96-hour window, not 30,000.

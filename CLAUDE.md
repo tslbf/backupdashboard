@@ -259,15 +259,20 @@ Backup-specific decisions on top of the theme:
 - **Veeam TLS**: Python 3.11 links OpenSSL 3.x, whose defaults an older Windows
   TLS stack won't negotiate — it drops the connection and you get
   `[WinError 10054] An existing connection was forcibly closed`, which mentions
-  nothing about TLS. `veeam.tls_context()` pins TLS 1.2 as both the **minimum
-  and the maximum**: `SecurityProtocol = Tls12` in the PowerShell offers 1.2 and
+  nothing about TLS. `veeam.tls_context()` offers **one** protocol, floor and
+  ceiling both — `SecurityProtocol = Tls12` in the PowerShell offers 1.2 and
   nothing else, and an old Schannel resets rather than negotiating down from a
-  1.3 ClientHello — so pinning only the floor, which is what the first attempt
-  at this did, changes nothing and the 10054 comes back unchanged. `SECLEVEL=1`
-  is the other half, scoped to the unverified case because it also accepts
-  weaker certificates. **`cli probe veeam`** walks TCP → each candidate
-  handshake → an unauthenticated REST call and prints what each layer did, so
-  the next one of these is measured instead of guessed at.
+  1.3 ClientHello, so pinning only the floor changes nothing. Which version is
+  `VEEAM_TLS_VERSION` (default 1.2), because guessing it twice was enough:
+  OpenSSL 3 also refuses to *offer* TLS 1.0/1.1 at its default security level,
+  so an appliance that has nothing newer enabled produces the identical reset.
+  `SECLEVEL` drops to 1 (0 for 1.0/1.1), scoped to the unverified case because
+  it also accepts weaker certificates.
+  **`cli probe veeam`** is the way to settle it: TCP → every protocol version →
+  an unauthenticated REST call, printing the `.env` line for whichever worked.
+  When nothing handshakes it tries plain HTTP on the same port, which
+  distinguishes "TLS is wrong" from "that is not the REST API" — `--port 9398`
+  checks Enterprise Manager's API, which older deployments used instead.
 - **Legacy import**: those scripts wrote **Eastern local time**, not UTC, so the
   importer localizes each row individually (the offset depends on whether that
   timestamp was EST or EDT). The fall-back hour is genuinely ambiguous; `fold=0`
