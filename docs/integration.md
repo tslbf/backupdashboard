@@ -64,10 +64,36 @@ any time, and a caller must ignore ones it does not know. Renaming or removing a
 field breaks a consumer this repo cannot see or test, so it is a version bump
 and a note here.
 
-## Reading it from the asset dashboard
+## The asset dashboard side — built
 
-Same-origin is simplest if both apps sit behind one host. Cross-origin needs the
-asset dashboard's origin in `CORS_ORIGINS` here:
+`tslbf/assetdashboard`, branch `claude/backup-status-tile`. One setting:
+
+```
+BACKUP_DASHBOARD_URL=http://AZUSCCM01:8010
+```
+
+Its Overview then grows a one-line strip above the coverage charts —
+*"42 of 49 protected · night of 2026-08-13 · 8 need attention →"* — linking out
+to this dashboard. Blank, and the strip does not render at all.
+
+**It reads this endpoint from its own backend, not from the browser.** That was
+the important call:
+
+- The app server can reach this host; a viewer's desk may not be able to.
+- Neither app needs a `CORS_ORIGINS` entry naming the other.
+- The setting lives with the rest of its backend config rather than being baked
+  into a static bundle at build time.
+- Its proxy caches for five minutes, so a slow or unreachable backup host never
+  adds its timeout to an Overview load.
+
+The strip never silently disappears. Unreachable, it says so and shows the error,
+because a missing strip and a healthy estate look identical — the same failure
+this whole app exists to prevent.
+
+## Reading it from somewhere else
+
+Same-origin is simplest if both apps sit behind one host. A browser calling this
+API directly from another origin needs that origin in `CORS_ORIGINS` here:
 
 ```
 CORS_ORIGINS=http://localhost:5173,http://AZUSCCM01:8020
@@ -145,6 +171,12 @@ Nothing here consumes the asset dashboard yet. When it grows an equivalent
 front door — the two payloads are deliberately the same shape (`app`, `title`,
 `headline`, `needs_attention`, `worst_outcome`) so a single tile component can
 render either.
+
+Worth saying plainly: **this is two apps that link, not one app.** They run as
+separate services on separate ports with separate databases, and they still look
+different — this one wears the LB Foster dark ops theme, the asset dashboard
+wears its own. Merging them into a single service with shared navigation is a
+much larger job and a separate decision; nothing here forecloses it.
 
 ## The morning digest
 
