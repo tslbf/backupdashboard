@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { DayDetail, DurationPoint, Meta, TrendPoint, api } from "../api";
+import { DayDetail, DurationPoint, Meta, ServerRow, TrendPoint, api } from "../api";
 import {
   Check,
   DayColumns,
   DurationChart,
   Dropdown,
+  ProblemColumns,
+  RankedProblems,
   Legend,
   Segmented,
   Skeleton,
@@ -37,6 +39,7 @@ export default function History() {
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<DayDetail | null>(null);
   const [asTable, setAsTable] = useState(false);
+  const [servers, setServers] = useState<ServerRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -49,6 +52,11 @@ export default function History() {
       .then(setTrend)
       .catch((e) => setError(String(e)));
     api.durations(days).then(setDurations).catch(() => {});
+    setServers(null);
+    api
+      .servers(days)
+      .then((res) => setServers(res.servers))
+      .catch(() => setServers([]));
   }, [days, source]);
 
   useEffect(() => {
@@ -77,6 +85,34 @@ export default function History() {
     const total = totals.success + totals.warning + totals.failed + totals.missed + totals.other;
     return total ? Math.round(((totals.success + totals.warning) / total) * 1000) / 10 : null;
   }, [totals]);
+
+  /** Per-server problem counts over the same range, from the same night cells
+      the Servers grid draws — so the two pages cannot disagree about who is
+      worst. Source filter applies here too. */
+  const offenders = useMemo(() => {
+    if (servers === null) return null;
+    return servers
+      .map((row) => {
+        const counts = chartCounts({});
+        for (const cell of row.days) {
+          if (!cell.outcome) continue;
+          if (source && !row.sources.includes(source)) continue;
+          const mapped = chartCounts({ [cell.outcome]: 1 });
+          counts.warning += mapped.warning;
+          counts.failed += mapped.failed;
+          counts.missed += mapped.missed;
+        }
+        return {
+          id: row.id,
+          name: row.name,
+          counts,
+          total: counts.warning + counts.failed + counts.missed,
+        };
+      })
+      .filter((row) => row.total > 0)
+      .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))
+      .slice(0, 10);
+  }, [servers, source]);
 
   const worstNights = useMemo(
     () =>
@@ -130,13 +166,47 @@ export default function History() {
         />
       </div>
 
+      {/* Two small multiples, not one chart. A healthy night is 55 successes
+          and one failure, and those two counts cannot share a y-axis without
+          the failure becoming a one-pixel sliver — the same argument the
+          duration card makes, with the same answer. The problems chart is
+          first because it is the one you came to read. */}
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Outcomes per night</h2>
+            <h2>Needing attention per night</h2>
             <div className="card-hint">
-              A backup night runs noon to noon in each server's own timezone, so UK and US jobs
-              share a column.
+              Failed, no backup and warning only, on their own scale — one bad backup out of
+              fifty-six is invisible on a chart that also has to show the fifty-five.
+            </div>
+          </div>
+          <Legend items={chartLegend(totals).filter((i) => i.key !== "success" && i.key !== "other")} />
+        </div>
+        {!trend.length ? (
+          <Skeleton height={130} />
+        ) : asTable ? (
+          <TrendTable trend={trend} onSelect={setSelected} problemsOnly />
+        ) : (
+          <ProblemColumns points={columns} progress={p} selected={selected} onSelect={setSelected} />
+        )}
+        {trend.length > 0 && totals.failed + totals.missed + totals.warning === 0 && (
+          <div className="empty-good" style={{ marginTop: "var(--space-3)" }}>
+            <span className="mark" aria-hidden>
+              ●
+            </span>
+            Not one failed, missed or warned backup in the last {days} nights.
+          </div>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>Coverage per night</h2>
+            <div className="card-hint">
+              Every result counted, so a night where servers stopped reporting is visible as a
+              shorter column. A backup night runs noon to noon in each server's own timezone, so
+              UK and US jobs share a column.
             </div>
           </div>
           <Legend items={chartLegend(totals)} />
@@ -185,6 +255,32 @@ export default function History() {
           )}
         </div>
 
+        <div className="card">
+          <div className="card-head">
+            <div>
+              <h2>Who to chase</h2>
+              <div className="card-hint">
+                Servers with the most bad nights in this range — the same problems as the chart
+                above, counted per server instead of per night.
+              </div>
+            </div>
+          </div>
+          {offenders === null ? (
+            <Skeleton height={160} />
+          ) : offenders.length === 0 ? (
+            <div className="empty-good">
+              <span className="mark" aria-hidden>
+                ●
+              </span>
+              No server had a bad night in this range.
+            </div>
+          ) : (
+            <RankedProblems rows={offenders} progress={p} />
+          )}
+        </div>
+      </div>
+
+      <div className="split-2">
         <div className="card">
           <div className="card-head">
             <h2>Worst nights</h2>
@@ -295,10 +391,19 @@ export default function History() {
 function TrendTable({
   trend,
   onSelect,
+  problemsOnly = false,
 }: {
   trend: TrendPoint[];
   onSelect: (date: string) => void;
+  /** The table twin of the problems chart shows the same nights it does. */
+  problemsOnly?: boolean;
 }) {
+  const rows = problemsOnly
+    ? trend.filter((t) => t.failed + t.missed + t.warning > 0)
+    : trend;
+  if (problemsOnly && rows.length === 0) {
+    return <div className="empty-good">No failed, missed or warned backups in this range.</div>;
+  }
   return (
     <div className="table-wrap" style={{ maxHeight: 420 }}>
       <table className="data">
@@ -314,7 +419,7 @@ function TrendTable({
           </tr>
         </thead>
         <tbody>
-          {[...trend].reverse().map((row) => (
+          {[...rows].reverse().map((row) => (
             <tr key={row.date} className="clickable" onClick={() => onSelect(row.date)}>
               <td>{fmtDay(row.date)}</td>
               <td className="num">{row.success}</td>

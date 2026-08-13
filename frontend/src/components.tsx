@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { Link } from "react-router-dom";
 import { Counts, Outcome } from "./api";
 
 /* ===========================================================================
@@ -62,8 +63,15 @@ export const OUTCOME_ORDER: Outcome[] = [
 export type ChartClass = "success" | "other" | "warning" | "missed" | "failed";
 
 /** Good at the bottom, trouble on top where the eye lands. Fixed order, so a
-    run of clean nights never repaints the ones with failures. */
-export const STACK_ORDER: ChartClass[] = ["success", "other", "warning", "missed", "failed"];
+    run of clean nights never repaints the ones with failures.
+ *
+ * `failed` sits between `warning` and `missed` deliberately. Adjacency in a
+ * stack is what the eye has to separate, and warn `#f0a63a` against missed
+ * `#ffa79c` is ΔE 10.8 for normal vision — under the 15 floor, so full-colour
+ * readers struggle with the boundary, never mind CVD ones (9.1 deutan). Putting
+ * crit between them makes the worst adjacent pair 16.2 normal / 10.2 deutan,
+ * and every pair passes. Reorder this and re-run the palette validator. */
+export const STACK_ORDER: ChartClass[] = ["success", "other", "warning", "failed", "missed"];
 
 export type ChartCounts = Record<ChartClass, number>;
 
@@ -469,6 +477,196 @@ export function toColumnPoint(date: string, counts: Partial<Counts>): ColumnPoin
   };
 }
 
+/** The three classes that mean somebody has work to do. */
+export const PROBLEM_ORDER: ChartClass[] = ["warning", "failed", "missed"];
+
+/**
+ * Which servers account for the bad nights — the "who do I chase" companion to
+ * "when was it bad".
+ *
+ * Horizontal because the labels are server names: a hostname under a vertical
+ * bar either rotates or truncates, and both are worse than turning the chart on
+ * its side. Ranked, because the reader's question is "who is worst" and rank is
+ * the answer; the bars share one scale so the lengths stay comparable.
+ */
+export function RankedProblems({
+  rows,
+  progress = 1,
+}: {
+  rows: { id: number; name: string; counts: ChartCounts; total: number }[];
+  progress?: number;
+}) {
+  const max = Math.max(1, ...rows.map((r) => r.total));
+  return (
+    <ul className="ranked">
+      {rows.map((row) => (
+        <li key={row.id}>
+          <Link className="ranked-name" to={`/servers/${row.id}`} title={row.name}>
+            {row.name}
+          </Link>
+          <span className="ranked-track">
+            {PROBLEM_ORDER.map((key) =>
+              row.counts[key] ? (
+                <span
+                  key={key}
+                  className={`ranked-seg sw-${key}`}
+                  style={{ width: `${(row.counts[key] / max) * 100 * progress}%` }}
+                  title={`${row.counts[key]} ${CHART_LABELS[key]}`}
+                />
+              ) : null
+            )}
+          </span>
+          <span className="ranked-value">{row.total}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * The same nights, counting only the problems, on their own scale.
+ *
+ * The companion to `DayColumns` and the reason it exists: on a healthy estate a
+ * night is 55 successes and one failure, and one part in fifty-six is a bar
+ * segment a pixel high. It is not that the failure is drawn badly — it is that
+ * a count of 56 and a count of 1 cannot share an axis and both stay readable.
+ * That is the same argument the duration card makes, and it gets the same
+ * answer: two small multiples, one honest scale each, stacked so the dates line
+ * up. This one tops out near 3, so a single failed backup is a bar you can see
+ * from across the room.
+ */
+export function ProblemColumns({
+  points,
+  progress = 1,
+  height = 130,
+  selected,
+  onSelect,
+}: {
+  points: ColumnPoint[];
+  progress?: number;
+  height?: number;
+  selected?: string | null;
+  onSelect?: (date: string) => void;
+}) {
+  const [ref, width] = useMeasure<HTMLDivElement>();
+  const [tip, setTip] = useState<TipState | null>(null);
+  const plot = height - AXIS_BAND;
+  const totals = points.map((p) => PROBLEM_ORDER.reduce((sum, k) => sum + p[k], 0));
+  const worst = Math.max(...totals, 0);
+  // Never scale to a fraction: a single bad backup should read as one unit, not
+  // as a full-height bar that looks like the estate fell over.
+  const max = Math.max(3, worst);
+  const inner = Math.max(0, width - Y_GUTTER);
+  const step = points.length ? inner / points.length : 0;
+  const barWidth = Math.max(2, Math.min(16, step - 3));
+  const labelEvery = Math.max(1, Math.ceil(points.length / 6));
+  const ticks = max <= 4 ? Array.from({ length: max + 1 }, (_, i) => i) : [0, Math.round(max / 2), max];
+
+  return (
+    <div className="chart" ref={ref} style={{ height }}>
+      {width > 0 && (
+        <svg width={width} height={height} role="img" aria-label="Backups needing attention per night">
+          {ticks.map((t) => {
+            const y = plot - (t / max) * (plot - 6);
+            return (
+              <g key={t}>
+                <line x1={Y_GUTTER} x2={width} y1={y} y2={y} className="grid-line" />
+                <text x={Y_GUTTER - 6} y={y + 3} className="axis-text" textAnchor="end">
+                  {t}
+                </text>
+              </g>
+            );
+          })}
+          {points.map((point, index) => {
+            const x = Y_GUTTER + index * step + (step - barWidth) / 2;
+            const nightTotal = totals[index];
+            let cursor = plot;
+            const isSel = selected === point.date;
+            return (
+              <g
+                key={point.date}
+                className={`col${onSelect ? " clickable" : ""}${isSel ? " on" : ""}`}
+                onMouseMove={(e) =>
+                  setTip({
+                    x: e.nativeEvent.offsetX + 14,
+                    y: Math.max(4, e.nativeEvent.offsetY - 12),
+                    node: <ColumnTip point={point} />,
+                  })
+                }
+                onMouseLeave={() => setTip(null)}
+                onFocus={() => setTip({ x: x + barWidth, y: 8, node: <ColumnTip point={point} /> })}
+                onBlur={() => setTip(null)}
+                onClick={onSelect ? () => onSelect(point.date) : undefined}
+                tabIndex={onSelect ? 0 : -1}
+                onKeyDown={(e) => {
+                  if (onSelect && (e.key === "Enter" || e.key === " ")) {
+                    e.preventDefault();
+                    onSelect(point.date);
+                  }
+                }}
+              >
+                <rect
+                  x={Y_GUTTER + index * step}
+                  y={0}
+                  width={Math.max(step, 8)}
+                  height={plot}
+                  className="col-hit"
+                />
+                {nightTotal === 0 ? (
+                  // A clean night still gets a mark, in ink rather than a status
+                  // hue: an empty column and a night with no data look identical
+                  // otherwise, and those mean opposite things here.
+                  <rect
+                    x={x}
+                    y={plot - 2}
+                    width={barWidth}
+                    height={2}
+                    rx={1}
+                    className="col-clean"
+                  />
+                ) : (
+                  PROBLEM_ORDER.map((key) => {
+                    const value = point[key];
+                    if (!value) return null;
+                    const full = (value / max) * (plot - 6) * progress;
+                    const h = Math.max(2, full - SEG_GAP);
+                    cursor -= full;
+                    return (
+                      <rect
+                        key={key}
+                        x={x}
+                        y={cursor}
+                        width={barWidth}
+                        height={h}
+                        rx={2}
+                        className={`col-seg sw-${key}`}
+                      />
+                    );
+                  })
+                )}
+              </g>
+            );
+          })}
+          {points.map((point, index) =>
+            index % labelEvery === 0 ? (
+              <text
+                key={`l-${point.date}`}
+                x={Y_GUTTER + index * step + step / 2}
+                y={height - 6}
+                className="axis-text"
+                textAnchor="middle"
+              >
+                {fmtDayShort(point.date)}
+              </text>
+            ) : null
+          )}
+        </svg>
+      )}
+      <Tooltip tip={tip} />
+    </div>
+  );
+}
+
 /**
  * Nightly outcome mix. One bar per backup night, segments in a fixed order so
  * a run of clean nights never repaints the ones with failures.
@@ -750,23 +948,27 @@ export function DurationChart({
 export function HeatStrip({
   cells,
   onSelect,
+  selected,
 }: {
   cells: { date: string; outcome: string | null; duration_sec?: number | null }[];
   onSelect?: (date: string) => void;
+  selected?: string | null;
 }) {
   return (
-    <div className="heat">
+    <div className={`heat${onSelect ? " clickable" : ""}`}>
       {cells.map((cell) => {
         const m = meta(cell.outcome);
+        const on = selected != null && selected === cell.date;
         return (
           <button
             key={cell.date}
-            className={`heat-cell sw-${m.cls}${cell.outcome ? "" : " empty"}`}
+            className={`heat-cell sw-${m.cls}${cell.outcome ? "" : " empty"}${on ? " on" : ""}`}
             title={`${fmtDay(cell.date)} — ${m.label}${
               cell.duration_sec != null ? ` (${fmtDuration(cell.duration_sec)})` : ""
-            }`}
+            }${onSelect ? " · click to open" : ""}`}
             onClick={onSelect ? () => onSelect(cell.date) : undefined}
             aria-label={`${cell.date}: ${m.label}`}
+            aria-pressed={onSelect ? on : undefined}
           />
         );
       })}

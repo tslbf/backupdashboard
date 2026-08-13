@@ -670,6 +670,55 @@ def update_server(
     return {**_server_payload(server, config, get_settings()), "events_restamped": restamped}
 
 
+class BulkServerUpdate(BaseModel):
+    server_ids: list[int]
+    hidden: bool | None = None
+    expected: bool | None = None
+
+
+@router.post("/servers/bulk")
+def bulk_update_servers(
+    payload: BulkServerUpdate,
+    session: Session = Depends(get_session),
+):
+    """Hide or unhide several servers at once.
+
+    Separate from `PATCH /servers/{id}` for one reason that matters: both
+    `hidden` and `expected` feed missed-detection, so every change has to be
+    followed by a rollup rebuild. Doing that per server would rebuild the whole
+    estate's nights once per checkbox — for a 40-server selection, forty times.
+    This applies them all, then rebuilds once.
+    """
+    from .rollups import refresh_all, refresh_server_summaries
+
+    if payload.hidden is None and payload.expected is None:
+        raise HTTPException(status_code=400, detail="nothing to change")
+    if not payload.server_ids:
+        raise HTTPException(status_code=400, detail="no servers selected")
+
+    # Chunked: SQL Server caps a statement at 2100 parameters, and "select all"
+    # on a large estate is exactly how that gets hit.
+    ids = list(dict.fromkeys(payload.server_ids))
+    servers: list[Server] = []
+    for start in range(0, len(ids), 500):
+        servers.extend(
+            session.query(Server).filter(Server.id.in_(ids[start : start + 500])).all()
+        )
+    if not servers:
+        raise HTTPException(status_code=404, detail="no such servers")
+
+    for server in servers:
+        if payload.hidden is not None:
+            server.hidden = payload.hidden
+        if payload.expected is not None:
+            server.expected = payload.expected
+    session.commit()
+
+    refresh_server_summaries(session)
+    refresh_all(session)
+    return {"updated": len(servers), "ids": [s.id for s in servers]}
+
+
 @router.get("/timezones")
 def timezones():
     """A short, curated list — the estate is US/UK, not the full 600-zone tzdata."""

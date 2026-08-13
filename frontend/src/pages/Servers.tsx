@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Meta, ServerRow, ServersResponse, api } from "../api";
 import {
   Check,
@@ -35,18 +35,24 @@ export default function Servers() {
   const [problemsOnly, setProblemsOnly] = useState(false);
   const [includeHidden, setIncludeHidden] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [picked, setPicked] = useState<Set<number>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     api.meta().then(setMeta).catch(() => {});
   }, []);
 
-  useEffect(() => {
+  const reload = () => {
     setData(null);
     api
       .servers(days, includeHidden)
       .then(setData)
       .catch((e) => setError(String(e)));
-  }, [days, includeHidden]);
+  };
+
+  useEffect(reload, [days, includeHidden]);
 
   const rows = useMemo(() => {
     const all = data?.servers ?? [];
@@ -75,6 +81,49 @@ export default function Servers() {
     },
     "problems"
   );
+
+  // Selection is scoped to what is on screen: a filter narrows the list, so a
+  // server the filter removed must not stay silently selected and get hidden
+  // by a bulk action aimed at rows you can see.
+  const visibleIds = useMemo(() => new Set(rows.map((r) => r.id)), [rows]);
+  const selected = useMemo(
+    () => [...picked].filter((id) => visibleIds.has(id)),
+    [picked, visibleIds]
+  );
+  const allPicked = rows.length > 0 && selected.length === rows.length;
+
+  const toggle = (id: number) =>
+    setPicked((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+
+  const toggleAll = () =>
+    setPicked(allPicked ? new Set() : new Set(rows.map((r) => r.id)));
+
+  const selectedRows = useMemo(
+    () => rows.filter((r) => visibleIds.has(r.id) && picked.has(r.id)),
+    [rows, picked, visibleIds]
+  );
+  const anyVisible = selectedRows.some((r) => !r.hidden);
+
+  const applyHidden = (hidden: boolean) => {
+    if (!selected.length) return;
+    setBusy(true);
+    setNotice(null);
+    api
+      .bulkServers(selected, { hidden })
+      .then((res) => {
+        setNotice(
+          `${res.updated} server${res.updated === 1 ? "" : "s"} ${hidden ? "hidden" : "restored"}.`
+        );
+        setPicked(new Set());
+        reload();
+      })
+      .catch((e) => setNotice(`Could not update: ${e}`))
+      .finally(() => setBusy(false));
+  };
 
   const zones = useMemo(() => {
     const set = new Map<string, number>();
@@ -181,6 +230,44 @@ export default function Servers() {
         </span>
       </div>
 
+      {/* Appears only when something is selected, so it never competes with the
+          filters for attention on the way in. */}
+      {selected.length > 0 && (
+        <div className="bulk-bar" role="region" aria-label="Bulk actions">
+          <span className="bulk-count">
+            <b>{nfmt(selected.length)}</b> selected
+          </span>
+          <span className="bulk-names">
+            {selectedRows.slice(0, 4).map((r) => r.name).join(", ")}
+            {selectedRows.length > 4 ? ` +${selectedRows.length - 4} more` : ""}
+          </span>
+          <span className="bulk-spacer" />
+          {anyVisible ? (
+            <button className="btn-primary" disabled={busy} onClick={() => applyHidden(true)}>
+              {busy ? "Hiding…" : "Hide from every view"}
+            </button>
+          ) : (
+            <button className="btn-primary" disabled={busy} onClick={() => applyHidden(false)}>
+              {busy ? "Restoring…" : "Unhide"}
+            </button>
+          )}
+          <button className="btn-secondary" disabled={busy} onClick={() => setPicked(new Set())}>
+            Clear
+          </button>
+        </div>
+      )}
+      {notice && (
+        <div className="notice" role="status">
+          {notice}
+          {notice.includes("hidden") && (
+            <>
+              {" "}
+              Tick <b>Include hidden</b> above to see or restore them.
+            </>
+          )}
+        </div>
+      )}
+
       <div className="card flush">
         {!data ? (
           <div style={{ padding: "var(--space-7)" }}>
@@ -193,6 +280,19 @@ export default function Servers() {
             <table className="data pin-first">
               <thead>
                 <tr>
+                  <th className="pick" style={{ width: 34 }}>
+                    <input
+                      type="checkbox"
+                      checked={allPicked}
+                      ref={(el) => {
+                        // Some-but-not-all reads as neither ticked nor empty.
+                        if (el) el.indeterminate = selected.length > 0 && !allPicked;
+                      }}
+                      onChange={toggleAll}
+                      aria-label={allPicked ? "Clear selection" : "Select all shown"}
+                      title={allPicked ? "Clear selection" : "Select all shown"}
+                    />
+                  </th>
                   <th style={{ minWidth: 150 }}>
                     <SortLabel id="name" sort={sort}>
                       Server
@@ -243,17 +343,40 @@ export default function Servers() {
               </thead>
               <tbody>
                 {sorted.map((row) => (
-                  <tr key={row.id} className={row.hidden ? "stale-row" : undefined}>
+                  <tr
+                    key={row.id}
+                    className={`${row.hidden ? "stale-row" : ""}${
+                      picked.has(row.id) ? " picked" : ""
+                    }`}
+                  >
+                    <td className="pick">
+                      <input
+                        type="checkbox"
+                        checked={picked.has(row.id)}
+                        onChange={() => toggle(row.id)}
+                        aria-label={`Select ${row.name}`}
+                      />
+                    </td>
                     <td>
                       <Link className="row-link" to={`/servers/${row.id}`}>
                         {row.name}
                       </Link>
+                      {row.hidden && (
+                        <span className="tz-pill" style={{ marginLeft: 6 }}>
+                          hidden
+                        </span>
+                      )}
                     </td>
                     <td>
                       <StatusChip state={row.last_outcome ?? "none"} />
                     </td>
                     <td>
-                      <HeatStrip cells={row.days} />
+                      {/* A cell is a night on a server — clicking one opens that
+                          server at that night, which is the record behind it. */}
+                      <HeatStrip
+                        cells={row.days}
+                        onSelect={(date) => navigate(`/servers/${row.id}?date=${date}`)}
+                      />
                     </td>
                     <td className="num">
                       {row.success_rate == null ? (

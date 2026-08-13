@@ -194,7 +194,22 @@ Backup-specific decisions on top of the theme:
 - No dual-axis charts. The duration card is two **small multiples** because the
   longest job and the median differ by an order of magnitude; sharing an axis
   flattens the median into the baseline and a second axis would invent a
-  correlation.
+  correlation. History's outcome charts are split for the same reason: a healthy
+  night is 55 successes and one failure, and one part in fifty-six is a sliver
+  a pixel high. **"Needing attention" (`ProblemColumns`, own scale, floor of 3)
+  comes first; "Coverage" (`DayColumns`, every result) is the context below it.**
+  A clean night still draws a hairline in ink, because an empty column and a
+  night with no data otherwise look identical and mean opposite things.
+- **`STACK_ORDER` puts `failed` between `warning` and `missed`.** Adjacency in a
+  stack is what the eye has to separate, and warn `#f0a63a` against missed
+  `#ffa79c` is ΔE 10.8 for normal vision — under the 15 floor, so full-colour
+  readers struggle with that boundary, never mind CVD ones (9.1 deutan). Crit
+  between them makes the worst adjacent pair 16.2 / 10.2. Reorder it and re-run
+  `validate_palette.js`.
+- The landing page leads with **Protected `n / total`**, not with the failure
+  count. A good night is four zeros, and a band of four zeros reads as an app
+  that failed to load. The exceptions keep their own tiles and the
+  needs-attention count sits in the hero, so nothing actionable is buried.
 - Thin marks: bars cap at 16px, heat cells at 16px. 2px gaps between stacked
   segments are surface showing through, not borders. Gridlines are solid
   hairlines, never dashed.

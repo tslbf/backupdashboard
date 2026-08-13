@@ -4,7 +4,18 @@ from datetime import timedelta
 
 import pytest
 
-from app.api import day_detail, overview, server_detail, trends, update_server, ServerUpdate
+from fastapi import HTTPException
+
+from app.api import (
+    BulkServerUpdate,
+    ServerUpdate,
+    bulk_update_servers,
+    day_detail,
+    overview,
+    server_detail,
+    trends,
+    update_server,
+)
 from app.models import BackupEvent, Server
 from app.outcomes import FAILED, MISSED, SUCCESS
 from app.rollups import refresh_days, refresh_server_summaries
@@ -173,3 +184,86 @@ class TestServerDetail:
         with pytest.raises(HTTPException) as exc:
             server_detail(999_999, days=30, session=estate)
         assert exc.value.status_code == 404
+
+
+class TestBulkHide:
+    """Hiding several servers at once.
+
+    Its own endpoint rather than a loop over PATCH for one reason: `hidden` and
+    `expected` both feed missed-detection, so each change has to be followed by
+    a rollup rebuild. Per server, a forty-server selection would rebuild the
+    whole estate's nights forty times.
+    """
+
+    def _ids(self, session, *names) -> list[int]:
+        return [session.query(Server).filter(Server.name == n).one().id for n in names]
+
+    def test_it_hides_every_server_named(self, estate):
+        ids = self._ids(estate, "PGHSQL01", "PGHAPP01")
+
+        result = bulk_update_servers(
+            BulkServerUpdate(server_ids=ids, hidden=True), session=estate
+        )
+
+        assert result["updated"] == 2
+        assert all(estate.get(Server, i).hidden for i in ids)
+
+    def test_hidden_servers_leave_the_night(self, estate):
+        """The point of hiding: the counts stop including them."""
+        before = overview(date_param=None, session=estate)["servers_total"]
+        bulk_update_servers(
+            BulkServerUpdate(server_ids=self._ids(estate, "PGHERP02"), hidden=True),
+            session=estate,
+        )
+        after = overview(date_param=None, session=estate)
+
+        assert after["servers_total"] == before - 1
+        assert after["counts"][FAILED] == 0, "the failing server was the one hidden"
+
+    def test_unhiding_brings_them_back(self, estate):
+        ids = self._ids(estate, "PGHERP02")
+        bulk_update_servers(BulkServerUpdate(server_ids=ids, hidden=True), session=estate)
+        bulk_update_servers(BulkServerUpdate(server_ids=ids, hidden=False), session=estate)
+
+        assert overview(date_param=None, session=estate)["counts"][FAILED] == 1
+
+    def test_a_repeated_id_is_counted_once(self, estate):
+        ids = self._ids(estate, "PGHSQL01")
+        result = bulk_update_servers(
+            BulkServerUpdate(server_ids=ids * 3, hidden=True), session=estate
+        )
+        assert result["updated"] == 1
+
+    def test_unknown_ids_are_ignored_rather_than_fatal(self, estate):
+        """A stale selection — the page was open while a purge ran — should
+        still apply to the servers that do exist."""
+        ids = self._ids(estate, "PGHSQL01") + [999_999]
+
+        result = bulk_update_servers(
+            BulkServerUpdate(server_ids=ids, hidden=True), session=estate
+        )
+
+        assert result["updated"] == 1
+
+    def test_an_empty_selection_is_rejected(self, estate):
+        with pytest.raises(HTTPException) as exc:
+            bulk_update_servers(BulkServerUpdate(server_ids=[], hidden=True), session=estate)
+        assert exc.value.status_code == 400
+
+    def test_a_change_with_no_fields_is_rejected(self, estate):
+        """Otherwise it would rebuild every night in the estate for nothing."""
+        with pytest.raises(HTTPException) as exc:
+            bulk_update_servers(
+                BulkServerUpdate(server_ids=self._ids(estate, "PGHSQL01")), session=estate
+            )
+        assert exc.value.status_code == 400
+
+    def test_expected_can_be_cleared_in_bulk_too(self, estate):
+        """A server that is not expected stops generating "No backup" rows —
+        the softer alternative to hiding it outright."""
+        ids = self._ids(estate, "BEDAPP01")
+        assert overview(date_param=None, session=estate)["counts"][MISSED] == 1
+
+        bulk_update_servers(BulkServerUpdate(server_ids=ids, expected=False), session=estate)
+
+        assert overview(date_param=None, session=estate)["counts"][MISSED] == 0

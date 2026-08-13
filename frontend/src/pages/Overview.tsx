@@ -193,20 +193,35 @@ export default function Overview() {
         </div>
       </div>
 
-      {/* ---------- the four numbers that decide whether today is a bad day ---------- */}
+      {/* ---------- what happened last night ----------
+          The hero is the count that is *working*, not the count that is broken.
+          A good night is four zeros, and a band of four zeros reads as an app
+          that failed to load rather than an estate that is fine — which is the
+          opposite of what the page is for. The exceptions keep their own tiles
+          beside it, and "needs attention" is called out in the hero itself so
+          the one number you act on is never buried. */}
       <div className="night-band">
         <div className="card">
-          <div className="kicker">Needs attention</div>
-          <div className={`hero-figure ${allClear ? "good" : "bad"}`}>
-            {countUp(needsAttention, p)}
+          <div className="kicker">Protected</div>
+          <div className={`hero-figure ${allClear ? "good" : ""}`}>
+            {countUp(data.servers_protected, p)}
+            <span className="hero-of">/ {nfmt(data.servers_total)}</span>
           </div>
-          <Delta current={needsAttention} previous={previousAttention} />
+          <div className="hero-sub">
+            servers have a restore point from this night
+            {data.protected_pct != null ? ` · ${data.protected_pct}%` : ""}
+          </div>
           <div style={{ marginTop: "auto" }}>
             <StackBar counts={data.counts} progress={p} height={10} />
-            <div className="hero-sub">
-              {nfmt(data.servers_protected)} of {nfmt(data.servers_total)} servers have a restore
-              point{data.protected_pct != null ? ` (${data.protected_pct}%)` : ""}
+            <div className={`hero-verdict ${allClear ? "good" : "bad"}`}>
+              <span className="mark" aria-hidden>
+                {allClear ? "●" : "▲"}
+              </span>
+              {allClear
+                ? "Every expected backup completed"
+                : `${nfmt(needsAttention)} ${needsAttention === 1 ? "server needs" : "servers need"} attention`}
             </div>
+            <Delta current={needsAttention} previous={previousAttention} />
           </div>
         </div>
 

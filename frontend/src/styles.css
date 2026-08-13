@@ -268,6 +268,25 @@ input, button, select, textarea { font-family: inherit; letter-spacing: inherit;
 }
 .hero-figure.bad { color: var(--o-failed-fg); }
 .hero-figure.good { color: var(--o-success-fg); }
+/* The denominator is context, not the figure: same baseline, quieter. */
+.hero-figure .hero-of {
+  font-size: var(--text-kpi);
+  color: var(--color-neutral-600);
+  margin-left: var(--space-2);
+  letter-spacing: normal;
+}
+/* Status is never colour alone — the glyph and the sentence carry it too. */
+.hero-verdict {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+  font-size: var(--text-cell);
+}
+.hero-verdict + .delta { margin-top: var(--space-1); }
+.hero-verdict .mark { font-size: 10px; line-height: 1; }
+.hero-verdict.good { color: var(--o-success-fg); }
+.hero-verdict.bad { color: var(--o-failed-fg); }
 .hero-sub { font-size: var(--text-meta); color: var(--color-neutral-600); margin-top: var(--space-2); }
 .stat-num {
   font-size: var(--text-kpi);
@@ -647,6 +666,77 @@ th.th-sort.sorted .sort-ind { opacity: 1; }
 }
 .heat-cell:hover { filter: brightness(1.3); transform: scaleY(1.15); }
 .heat-cell.empty { background: var(--o-none); }
+.heat:not(.clickable) .heat-cell { cursor: default; }
+/* A clean night on the problems chart: ink, not a status hue — it is the
+   absence of a problem, not an outcome class of its own. */
+.col-clean { fill: var(--color-neutral-600); opacity: 0.55; }
+
+/* ---------- ranked horizontal bars ---------- */
+.ranked { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-3); }
+.ranked li {
+  display: grid;
+  grid-template-columns: minmax(0, 150px) minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: var(--space-4);
+}
+/* Ink, not the link accent: crimson is identity here, and a chart full of
+   crimson server names reads as a status the bars did not report. */
+.ranked-name {
+  font-size: var(--text-cell);
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ranked-name:hover { color: var(--color-accent-300); }
+/* The track is the surface showing through, not a filled bar. */
+.ranked-track { display: flex; gap: 2px; height: 12px; align-items: stretch; }
+.ranked-seg { border-radius: var(--radius-xs); min-width: 3px; }
+.ranked-value {
+  font-size: var(--text-meta);
+  color: var(--color-neutral-600);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* The selected night keeps its own status colour and gains a ring in ink, so
+   selection never reads as a sixth outcome. */
+.heat-cell.on {
+  outline: 2px solid var(--color-text);
+  outline-offset: 1px;
+}
+
+/* ---------- bulk selection ---------- */
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-6);
+  margin-bottom: var(--card-gap);
+  background: var(--color-surface);
+  border: var(--edge);
+  border-radius: var(--radius-md);
+}
+.bulk-count { font-size: var(--text-cell); }
+.bulk-names {
+  font-size: var(--text-meta);
+  color: var(--color-neutral-600);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.bulk-spacer { flex: 1 1 auto; }
+.notice {
+  font-size: var(--text-meta);
+  color: var(--color-neutral-600);
+  padding: var(--space-3) var(--space-6);
+  margin-bottom: var(--card-gap);
+  border: var(--edge);
+  border-radius: var(--radius-md);
+}
+td.pick, th.pick { padding-right: 0; }
+td.pick input, th.pick input { cursor: pointer; margin: 0; }
+tr.picked > td { background: var(--tint-hover); }
 
 /* ---------- layout grids ----------
    Never leave a flexible track unfloored: a bare 1fr absorbs the whole width

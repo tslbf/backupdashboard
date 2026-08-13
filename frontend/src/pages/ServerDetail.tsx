@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { Meta, ServerDetail as ServerDetailData, api } from "../api";
 import {
   Check,
@@ -20,6 +20,12 @@ import {
 
 export default function ServerDetail() {
   const { id } = useParams();
+  // ?date= arrives from a heat cell on the Servers page. A cell is one night on
+  // one server, so following it has to land on that night's runs — not on the
+  // top of a page with sixty of them.
+  const [params, setParams] = useSearchParams();
+  const night = params.get("date");
+  const nightRef = useRef<HTMLTableRowElement | null>(null);
   const [data, setData] = useState<ServerDetailData | null>(null);
   const [meta, setMeta] = useState<Meta | null>(null);
   const [zones, setZones] = useState<string[]>([]);
@@ -40,6 +46,12 @@ export default function ServerDetail() {
     api.meta().then(setMeta).catch(() => {});
     api.timezones().then(setZones).catch(() => {});
   }, []);
+
+  // After the runs render, not before — the row does not exist until then.
+  useEffect(() => {
+    if (!night || !data) return;
+    nightRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [night, data]);
 
   const legendTotals = useMemo(() => {
     const totals = chartCounts({});
@@ -127,11 +139,20 @@ export default function ServerDetail() {
           <div className="card-head">
             <div>
               <h2>Last {data.timeline.length} nights</h2>
-              <div className="card-hint">Oldest on the left. Hover a night for its result.</div>
+              <div className="card-hint">
+                Oldest on the left. Click a night to jump to its runs below.
+              </div>
             </div>
             <Legend items={chartLegend(legendTotals)} />
           </div>
-          <HeatStrip cells={data.timeline} />
+          <HeatStrip
+            cells={data.timeline}
+            selected={night}
+            onSelect={(date) => {
+              nightRef.current = null;
+              setParams(date === night ? {} : { date });
+            }}
+          />
           <div className="tile-row" style={{ marginTop: "var(--space-5)" }}>
             <div className="tile">
               <span className="label">Last good backup</span>
@@ -272,8 +293,14 @@ export default function ServerDetail() {
                 </tr>
               </thead>
               <tbody>
-                {data.events.map((event) => (
-                  <tr key={event.id}>
+                {data.events.map((event) => {
+                  const onThisNight = night != null && event.report_date === night;
+                  return (
+                  <tr
+                    key={event.id}
+                    className={onThisNight ? "picked" : undefined}
+                    ref={onThisNight && !nightRef.current ? nightRef : undefined}
+                  >
                     <td>
                       <StatusChip state={event.outcome} />
                     </td>
@@ -299,7 +326,8 @@ export default function ServerDetail() {
                     </td>
                     <td className="num muted">{event.duration_label}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

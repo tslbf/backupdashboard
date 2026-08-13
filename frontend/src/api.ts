@@ -251,4 +251,13 @@ export const api = {
       if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
       return r.json() as Promise<ServerRow>;
     }),
+  bulkServers: (serverIds: number[], patch: { hidden?: boolean; expected?: boolean }) =>
+    fetch("/api/servers/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server_ids: serverIds, ...patch }),
+    }).then((r) => {
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+      return r.json() as Promise<{ updated: number; ids: number[] }>;
+    }),
 };
