@@ -62,6 +62,9 @@ export interface Overview {
   protected_pct: number | null;
   jobs_total: number;
   problems: Problem[];
+  /** Every result for the night, worst first — the landing page's list.
+   *  `problems` stays the actionable subset that needs_attention counts. */
+  rows: Problem[];
   per_source: SourceBreakdown[];
   attention: {
     never_succeeded: { server_id: number; server: string; last_event_utc: string | null }[];

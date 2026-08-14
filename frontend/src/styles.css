@@ -373,6 +373,36 @@ rect.sw-other   { fill: var(--o-other); }
 .btn-secondary:hover { border-color: var(--color-neutral-700); color: var(--color-text); }
 button:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* ---------- date picker ----------
+   A native date input wearing the secondary button's clothes. Native because it
+   brings the platform calendar, keyboard entry and the reader's own locale with
+   it — none of which a hand-built popover gets right for free. */
+.date-pick {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--color-neutral-800);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2);
+  transition: border-color var(--dur-hover);
+}
+.date-pick:hover, .date-pick:focus-within { border-color: var(--color-neutral-700); }
+.date-pick input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--color-text);
+  font-size: var(--text-body);
+  padding: var(--space-2) var(--space-1);
+  font-variant-numeric: tabular-nums;
+}
+/* The picker glyph ships black, which is invisible on this ground. */
+.date-pick input::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  opacity: 0.55;
+  cursor: pointer;
+}
+.date-pick input::-webkit-calendar-picker-indicator:hover { opacity: 1; }
+
 .live {
   display: flex;
   align-items: center;
@@ -756,6 +786,34 @@ tr.picked > td { background: var(--tint-hover); }
   align-items: start;
 }
 .split-2 > * { min-width: 0; }
+/* Opt-in: the two columns become equal height, and whichever card asks to
+   scroll fills its own. Not the default, because a short card stretched to a
+   tall neighbour is mostly empty surface. */
+.split-2.stretch { align-items: stretch; }
+
+/* ---------- the night list ----------
+   A card that grows to the column beside it and scrolls its table, rather than
+   running the whole estate down the page and pushing everything else below the
+   fold. The floor stops it collapsing to nothing on a night with few results. */
+.night-list { min-height: 420px; }
+/* `flex: 1 1 0` and not `1 1 auto`: with an `auto` basis the table's own height
+   counts toward the card's intrinsic height, so the grid row sizes to fifty-six
+   rows and the neighbouring column stretches to match — the exact opposite of
+   the intent. A zero basis contributes nothing to intrinsic height, so the row
+   is sized by the column beside it and this fills whatever that turns out to be. */
+.night-scroll {
+  flex: 1 1 0;
+  overflow-y: auto;
+  min-height: 0;
+}
+/* The header has to stay put while the body scrolls — a list of fifty-six rows
+   is unreadable once the column names have scrolled away. */
+.night-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--color-surface);
+}
 
 .tile-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(178px, 1fr)); gap: var(--space-5); }
 .tile-row.wide { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }

@@ -267,3 +267,60 @@ class TestBulkHide:
         bulk_update_servers(BulkServerUpdate(server_ids=ids, expected=False), session=estate)
 
         assert overview(date_param=None, session=estate)["counts"][MISSED] == 0
+
+
+class TestNightRows:
+    """The landing page lists every server on the night, worst first — not just
+    the exceptions. `problems` stays the actionable subset, because three other
+    things count it."""
+
+    def test_rows_covers_every_result(self, estate):
+        data = overview(date_param=None, session=estate)
+
+        assert len(data["rows"]) == sum(data["counts"].values())
+        assert len(data["rows"]) > len(data["problems"])
+
+    def test_problems_sort_to_the_top(self, estate):
+        outcomes = [r["outcome"] for r in overview(date_param=None, session=estate)["rows"]]
+
+        first_success = outcomes.index(SUCCESS)
+        assert all(o != SUCCESS for o in outcomes[:first_success])
+        assert all(o == SUCCESS for o in outcomes[first_success:]), (
+            "worst first, and once the problems are done the rest follow"
+        )
+
+    def test_problems_is_still_only_the_problems(self, estate):
+        """The digest, /api/summary and needs_attention all count this. Widening
+        it would quietly turn "1 needs attention" into "56 need attention"."""
+        data = overview(date_param=None, session=estate)
+
+        assert all(r["outcome"] != SUCCESS for r in data["problems"])
+        assert len(data["problems"]) == 2
+
+    def test_the_rows_are_the_same_shape_as_the_problems(self, estate):
+        """One renderer draws both, so a missing key is a blank column."""
+        data = overview(date_param=None, session=estate)
+
+        assert set(data["rows"][0]) == set(data["problems"][0])
+
+    def test_a_clean_night_still_lists_everything(self, session):
+        """The case that motivated this: nothing to chase, and you still want to
+        see that the server you were worried about ran."""
+        for day in NIGHTS:
+            add_event(session, "PGHSQL01", day, SUCCESS)
+            add_event(session, "PGHAPP01", day, SUCCESS)
+        refresh_server_summaries(session)
+        refresh_days(session, NIGHTS)
+
+        data = overview(date_param=None, session=session)
+
+        assert data["problems"] == []
+        assert len(data["rows"]) == 2
+
+    def test_streaks_are_only_computed_for_problems(self, estate):
+        """A run of successes is not a streak anyone chases, and computing it
+        would cost a query per server."""
+        rows = overview(date_param=None, session=estate)["rows"]
+
+        assert all(r["streak"] == 1 for r in rows if r["outcome"] == SUCCESS)
+        assert any(r["streak"] > 1 for r in rows if r["outcome"] == FAILED)

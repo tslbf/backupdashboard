@@ -4,6 +4,7 @@ import { Meta, Overview as OverviewData, Problem, TrendPoint, api } from "../api
 import {
   DayColumns,
   Legend,
+  OUTCOME_ORDER,
   LiveToggle,
   Segmented,
   Skeleton,
@@ -25,6 +26,10 @@ import {
 
 const POLL_MS = 60_000;
 const TREND_DAYS = 30;
+
+/** The outcomes that mean somebody has work to do. Mirrors the backend's
+ *  PROBLEM_OUTCOMES — the same three that feed the needs-attention count. */
+const PROBLEMS = new Set(["failed", "missed", "warning"]);
 
 export default function Overview() {
   const p = useIntro();
@@ -71,15 +76,21 @@ export default function Overview() {
     ? data.previous_counts.failed + data.previous_counts.missed + data.previous_counts.warning
     : 0;
 
-  const problems = useMemo(() => {
-    const rows = data?.problems ?? [];
-    return sourceFilter ? rows.filter((r) => r.source === sourceFilter) : rows;
+  /* Every result for the night, not just the exceptions — the problems sort to
+     the top. A page that only ever lists failures gives no way to confirm that
+     a server you were worried about is fine, which is half of what the morning
+     check is for. */
+  const rows = useMemo(() => {
+    const all = data?.rows ?? [];
+    return sourceFilter ? all.filter((r) => r.source === sourceFilter) : all;
   }, [data, sourceFilter]);
 
+  const problems = useMemo(() => rows.filter((r) => PROBLEMS.has(r.outcome)), [rows]);
+
   const { sorted, sort } = useSort<Problem>(
-    problems,
+    rows,
     {
-      severity: (r) => ["failed", "missed", "warning"].indexOf(r.outcome),
+      severity: (r) => OUTCOME_ORDER.indexOf(r.outcome),
       server: (r) => r.server,
       source: (r) => r.source_name,
       streak: (r) => -r.streak,
@@ -172,16 +183,27 @@ export default function Overview() {
           </p>
         </div>
         <div className="head-actions">
-          <button className="btn-secondary" onClick={() => shift(-1)}>
-            ← Previous
+          <button className="btn-secondary" onClick={() => shift(-1)} title="The night before">
+            ←
           </button>
+          {/* A real date input rather than a hand-built calendar: it gets the
+              platform picker, keyboard entry and the locale for free, and the
+              max stops anyone navigating to a night that has not happened. */}
+          <label className="date-pick" title="Jump to a night">
+            <input
+              type="date"
+              value={data.report_date}
+              max={meta.current_report_date}
+              onChange={(e) => setDate(e.target.value || null)}
+            />
+          </label>
           <button
             className="btn-secondary"
             onClick={() => shift(1)}
             disabled={data.is_current}
-            title={data.is_current ? "This is the most recent night" : undefined}
+            title={data.is_current ? "This is the most recent night" : "The night after"}
           >
-            Next →
+            →
           </button>
           {!data.is_current && (
             <button className="btn-primary" onClick={() => setDate(null)}>
@@ -251,14 +273,21 @@ export default function Overview() {
         />
       </div>
 
-      {/* ---------- the list you actually work from ---------- */}
-      <div className="split-2">
-        <div className="card flush">
+      {/* ---------- the list you actually work from ----------
+          Every server on the night, worst first, scrolling inside a card that
+          stretches to the column beside it. Problems-only would answer "what is
+          broken" and nothing else; the other half of a morning check is
+          confirming that the server you were worried about last week is fine. */}
+      <div className="split-2 stretch">
+        <div className="card flush night-list">
           <div className="card-head" style={{ padding: "var(--space-7) var(--space-8) 0" }}>
             <div>
-              <h2>Servers needing attention</h2>
+              <h2>Last night, server by server</h2>
               <div className="card-hint">
-                Sorted worst first. Times show each server's own clock where it differs from yours.
+                {problems.length > 0
+                  ? `${nfmt(problems.length)} needing attention first, then the rest of the ${nfmt(rows.length)}.`
+                  : `All ${nfmt(rows.length)} results.`}{" "}
+                Times show each server's own clock where it differs from yours.
               </div>
             </div>
             <div className="head-actions">
@@ -275,16 +304,13 @@ export default function Overview() {
           </div>
 
           {sorted.length === 0 ? (
-            <div className="empty-good">
-              <span className="mark" aria-hidden>
-                ●
-              </span>
-              {problems.length === 0 && data.problems.length > 0
-                ? "Nothing to chase for this source."
-                : "Every expected backup completed."}
+            <div className="empty">
+              {sourceFilter
+                ? "Nothing ran for this source on this night."
+                : "No results recorded for this night."}
             </div>
           ) : (
-            <div className="table-wrap" style={{ marginTop: "var(--space-5)" }}>
+            <div className="table-wrap night-scroll" style={{ marginTop: "var(--space-5)" }}>
               <table className="data">
                 <thead>
                   <tr>

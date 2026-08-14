@@ -299,29 +299,44 @@ def overview(
     )
     streaks = _streaks(session, [srv.id for _, srv in problem_rows], day)
 
-    problems = []
-    for server_day, server in problem_rows:
+    def night_row(server_day, server) -> dict:
         tz = effective_timezone(server, config, settings)
-        problems.append(
-            {
-                "server_id": server.id,
-                "server": server.name,
-                "source": server_day.source,
-                "source_name": _display_name(config, server_day.source),
-                "outcome": server_day.outcome,
-                "result_raw": server_day.result_raw,
-                "end_utc": _iso(server_day.end_utc),
-                "end_local": _local_time(server_day.end_utc, tz),
-                "timezone": tz,
-                "timezone_label": offset_label(tz),
-                "duration_sec": server_day.duration_sec,
-                "duration_label": fmt_duration(server_day.duration_sec),
-                "streak": streaks.get(server.id, 1),
-                "last_success_utc": _iso(server.last_success_utc),
-                "last_success_days": _days_since(server.last_success_utc),
-                "event_count": server_day.event_count,
-            }
-        )
+        return {
+            "server_id": server.id,
+            "server": server.name,
+            "source": server_day.source,
+            "source_name": _display_name(config, server_day.source),
+            "outcome": server_day.outcome,
+            "result_raw": server_day.result_raw,
+            "end_utc": _iso(server_day.end_utc),
+            "end_local": _local_time(server_day.end_utc, tz),
+            "timezone": tz,
+            "timezone_label": offset_label(tz),
+            "duration_sec": server_day.duration_sec,
+            "duration_label": fmt_duration(server_day.duration_sec),
+            # Only ever computed for the problem rows: a streak of successes is
+            # not a thing anyone chases, and it would cost a query per server.
+            "streak": streaks.get(server.id, 1),
+            "last_success_utc": _iso(server.last_success_utc),
+            "last_success_days": _days_since(server.last_success_utc),
+            "event_count": server_day.event_count,
+        }
+
+    problems = [night_row(sd, srv) for sd, srv in problem_rows]
+
+    # Every result for the night, worst first. The landing page lists the whole
+    # estate with the problems at the top, because "what else ran" is a fair
+    # question once you have dealt with the exceptions — and a page that only
+    # ever shows failures gives no way to confirm a server you were worried
+    # about is fine.
+    #
+    # `problems` stays the actionable subset, deliberately: the morning digest,
+    # the /api/summary tile and `needs_attention` all count it, and widening it
+    # would quietly turn "3 need attention" into "56 need attention".
+    rows = [
+        night_row(sd, srv)
+        for sd, srv in sorted(tonight, key=lambda pair: (severity(pair[0].outcome), pair[1].name))
+    ]
 
     return {
         "report_date": day,
@@ -339,6 +354,7 @@ def overview(
         else None,
         "jobs_total": sum(counts.values()),
         "problems": problems,
+        "rows": rows,
         "per_source": [
             {
                 "source": source,
