@@ -72,6 +72,17 @@ Guardrails on that, all of which exist to stop the dashboard crying wolf:
 - `expected=False` and `hidden=True` both remove a server from missed-detection.
 - `NON_EXPECTING_SOURCES = {legacy}` — the historical import stopped being
   written the day the collectors took over; every night after would be a miss.
+- **`CURRENT_STATE_SOURCES = {nable}`** — Cove reports each device's *latest*
+  session and has no history endpoint, so an unpolled night and an empty night
+  are indistinguishable. A night is only judged for these sources if a
+  successful `CollectorRun` credits it: `_observed_nights` stamps each run with
+  `report_date` **in the server's own timezone** and credits that night plus the
+  one before (an 08:00 poll sits inside the night it reports on; a 15:00 poll
+  has rolled into the next but still saw the one that closed at noon). Without
+  it, a weekend with the collector switched off came back as a solid band of
+  "No backup" across the whole UK estate — and the digest would have emailed it.
+  Veeam and Azure are unaffected: they have real history endpoints, so an absent
+  night in a 96h query is evidence.
 - Retention prunes both events and server-days together.
 
 **Scheduling**: collectors run **once a morning** at `COLLECT_TIME` (08:00 in
@@ -242,7 +253,9 @@ Backup-specific decisions on top of the theme:
   (`VEEAM_VERIFY_TLS=false`).
 - **N-able Cove**: `EnumerateAccountStatistics` returns *current state*, not
   history — the collector only ever sees the latest run per device, so Cove
-  history accumulates from first poll. Two response shapes exist (objects with
+  history accumulates from first poll. There is no lookback to raise: a night
+  nobody polled is gone. See `CURRENT_STATE_SOURCES` above for what that costs
+  missed-detection. Two response shapes exist (objects with
   `.Settings`, or rows of `"CODE=value"` strings); both are handled. Column
   codes `I18 D9F18 D9F17 D9F12` with `D1F*` as the Files-and-Folders fallback.
   Partner id is resolved from the name at runtime — a stale configured id

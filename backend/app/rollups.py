@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -33,6 +33,20 @@ log = logging.getLogger(__name__)
 # legacy table stopped being written the day the collectors took over, and every
 # night after that would otherwise read as a miss.
 NON_EXPECTING_SOURCES = {LEGACY_SOURCE}
+
+# Sources whose API reports *current state* rather than history.
+#
+# Cove's EnumerateAccountStatistics returns one row per device carrying its
+# latest session — there is no date range and no way to ask what happened on a
+# night that has passed. So for these sources an unobserved night and an empty
+# night are indistinguishable, and marking every unpolled night "No backup" is
+# the dashboard inventing an outage: a weekend with the collector switched off
+# came back as a solid band of red across the entire UK estate, every one of
+# which had in fact backed up fine.
+#
+# Veeam and Azure are unaffected — both have real history endpoints, so asking
+# for 96 hours and finding a night absent means it genuinely was.
+CURRENT_STATE_SOURCES = {"nable"}
 
 
 def refresh_days(session: Session, dates: list[str]) -> int:
@@ -109,12 +123,21 @@ def refresh_days(session: Session, dates: list[str]) -> int:
         written += 1
 
     # --- the absent ones ---------------------------------------------------
+    observed = _observed_nights(session, servers, dates, settings)
+
     for (server_id, source), seen_dates in activity.items():
         server = servers.get(server_id)
         if server is None or not server.expected or source in NON_EXPECTING_SOURCES:
             continue
         for day in dates:
             if (day, server_id, source) in by_key:
+                continue
+            # A current-state source can only be judged on a night it was
+            # actually polled during. Without this, every night the app was off
+            # reads as an estate-wide outage — and the morning digest emails it.
+            if source in CURRENT_STATE_SOURCES and day not in observed.get(
+                (source, server_id), ()
+            ):
                 continue
             if _was_live(seen_dates, day, stale_days):
                 session.add(
@@ -130,6 +153,78 @@ def refresh_days(session: Session, dates: list[str]) -> int:
 
     session.commit()
     return written
+
+
+def _observed_nights(
+    session: Session, servers: dict, dates: list[str], settings
+) -> dict[tuple[str, int], set[str]]:
+    """Which nights a current-state collector was actually in a position to see.
+
+    Cove tells us one thing: each device's most recent backup, as of the moment
+    we asked. So a poll at time T says something about the night T falls in —
+    and about the night before it, which had already closed when we looked. It
+    says nothing at all about a night three days earlier, whose session has long
+    since been overwritten by a later one.
+
+    Hence the window: a run credits its own report date **and the one before**.
+    A poll at 08:00 sits inside the night it is reporting on (nights run noon to
+    noon, so the overnight job has already finished); a poll at 15:00 has rolled
+    into the following night but still saw the one that closed at noon. Stamping
+    the run with `report_date` and crediting `{that night, the previous one}`
+    covers both without needing to know which case it is.
+
+    Keyed per server because the stamp depends on the server's own timezone: a
+    single 08:00 Eastern run lands on a different night for a London machine
+    than for a Pittsburgh one, which is the whole premise of this app.
+    """
+    from .ingest import effective_cutoff, effective_timezone
+    from .models import CollectorRun, SourceConfig
+    from .timeframes import report_date_str
+
+    if not servers or not CURRENT_STATE_SOURCES:
+        return {}
+
+    # Runs a few days either side of the window being rebuilt: a run credits the
+    # night before its own, and timezones move the boundary.
+    first = date.fromisoformat(dates[0]) - timedelta(days=3)
+    last = date.fromisoformat(dates[-1]) + timedelta(days=3)
+    runs = (
+        session.query(CollectorRun.source, CollectorRun.started_at)
+        .filter(
+            CollectorRun.source.in_(sorted(CURRENT_STATE_SOURCES)),
+            CollectorRun.status == "success",
+            CollectorRun.started_at >= datetime.combine(first, time.min),
+            CollectorRun.started_at <= datetime.combine(last, time.max),
+        )
+        .all()
+    )
+    if not runs:
+        return {}
+
+    config = {c.source: c for c in session.query(SourceConfig).all()}
+    # Most servers of a source share a timezone, so the stamping is memoized on
+    # (source, tz, cutoff) rather than recomputed per server.
+    by_zone: dict[tuple[str, str, int], set[str]] = {}
+    out: dict[tuple[str, int], set[str]] = {}
+
+    for source in sorted(CURRENT_STATE_SOURCES):
+        started_times = [r.started_at for r in runs if r.source == source and r.started_at]
+        if not started_times:
+            continue
+        for server_id, server in servers.items():
+            tz = effective_timezone(server, config, settings)
+            cutoff = effective_cutoff(server, settings)
+            key = (source, tz, cutoff)
+            if key not in by_zone:
+                nights: set[str] = set()
+                for started in started_times:
+                    stamp = report_date_str(started, tz, cutoff)
+                    nights.add(stamp)
+                    # The night that had already closed when we looked.
+                    nights.add((date.fromisoformat(stamp) - timedelta(days=1)).isoformat())
+                by_zone[key] = nights
+            out[(source, server_id)] = by_zone[key]
+    return out
 
 
 def _was_live(seen_dates: list[str], day: str, stale_days: int) -> bool:
