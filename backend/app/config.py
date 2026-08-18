@@ -62,10 +62,17 @@ class Settings(BaseSettings):
     # "Run now" on the Collectors page works regardless.
     collect_time: str = "08:00"
     # Extra polling on top of the daily run, per source, in minutes.
-    # 0 (the default) means no polling — the daily run and manual runs only.
+    # 0 means no polling — the daily run and manual runs only.
     veeam_interval: int = 0
-    nable_interval: int = 0
     azure_interval: int = 0
+    # Cove is the exception, and deliberately so. Its API reports only each
+    # device's *latest* session, so a poll that does not happen loses that night
+    # permanently — there is no history endpoint to go back for it. One missed
+    # daily run is one night gone. Polling every four hours means a single
+    # failure costs nothing: a later poll the same day still sees the same last
+    # session. The call is one cheap paged enumeration, nothing like Azure's
+    # thousands of ARM requests, so the extra polls are close to free.
+    nable_interval: int = 240
     # The backfill source. Never scheduled: it walks the whole historical table.
     legacy_interval: int = 0
     legacy_scheduled: bool = False

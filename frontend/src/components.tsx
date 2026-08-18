@@ -962,7 +962,7 @@ export function HeatStrip({
         return (
           <button
             key={cell.date}
-            className={`heat-cell sw-${m.cls}${cell.outcome ? "" : " empty"}${on ? " on" : ""}`}
+            className={`heat-cell sw-${m.cls}${cell.outcome ? "" : " no-data"}${on ? " on" : ""}`}
             title={`${fmtDay(cell.date)} — ${m.label}${
               cell.duration_sec != null ? ` (${fmtDuration(cell.duration_sec)})` : ""
             }${onSelect ? " · click to open" : ""}`}

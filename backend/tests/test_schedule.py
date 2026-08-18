@@ -69,9 +69,18 @@ class TestWhatGetsScheduled:
     def test_the_live_sources_are(self, source):
         assert ALL_COLLECTORS[source].schedulable(settings()) is True
 
-    @pytest.mark.parametrize("source", ["veeam", "nable", "azure"])
+    @pytest.mark.parametrize("source", ["veeam", "azure"])
     def test_polling_is_off_by_default(self, source):
+        """The daily run is enough for a source with a history endpoint."""
         assert ALL_COLLECTORS[source].interval_minutes(Settings()) == 0
+
+    def test_cove_polls_through_the_day_as_well(self):
+        """Cove is the exception. Its API reports only the latest session, so a
+        poll that does not happen loses that night for good — one missed daily
+        run is one night gone, unrecoverable. Polling every four hours means a
+        single failure costs nothing, because a later poll the same day still
+        sees the same last session."""
+        assert ALL_COLLECTORS["nable"].interval_minutes(Settings()) == 240
 
     def test_an_interval_can_still_be_added_on_top(self):
         """Kept for anyone who wants a source polled more often — it is additive
