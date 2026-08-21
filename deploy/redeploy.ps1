@@ -74,6 +74,13 @@ function Find-BootstrapPython {
 if (-not (Test-Path $Backend)) { throw "No backend\ under $RepoRoot - is -RepoRoot right?" }
 
 Step "[1/5] Pulling origin/$Branch"
+# The runner service account is not whoever cloned the repo, so git's
+# dubious-ownership guard would block every command below. Mark this checkout
+# safe for the account running this script (idempotent - only adds if missing).
+$safe = @($RepoRoot, ($RepoRoot -replace '\\', '/'))
+$known = @(); try { $known = git config --global --get-all safe.directory 2>$null } catch { }
+foreach ($p in $safe) { if ($known -notcontains $p) { git config --global --add safe.directory $p | Out-Null } }
+
 git -C $RepoRoot rev-parse --is-inside-work-tree > $null 2>&1
 if ($LASTEXITCODE -ne 0) { throw "$RepoRoot is not a git checkout." }
 git -C $RepoRoot fetch --prune origin

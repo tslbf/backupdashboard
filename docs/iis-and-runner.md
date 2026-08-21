@@ -285,4 +285,5 @@ table are the durable records.
 | SQL `4060` / login failed | The app-pool identity has no rights on the DB. Run `grant-access.sql` for that login. |
 | Scheduler never runs at 08:00 | App pool idling out. Confirm `startMode=AlwaysRunning`, `idleTimeout=00:00:00`, `preloadEnabled=true` - `Install-IIS.ps1` sets these. |
 | Runner shows "Offline" | The runner service stopped. `Get-Service actions.runner.*`; start it. |
+| Deploy fails: `fatal: detected dubious ownership` | The runner service account differs from whoever cloned the repo. One-time, elevated: `git config --system --add safe.directory C:/AIProjects/BackupsDashboard` (forward slashes). `redeploy.ps1` also self-adds this for its own account. |
 | Deploy runs but nothing changes | `DEPLOY_DIR` variable points somewhere other than the real checkout. |
