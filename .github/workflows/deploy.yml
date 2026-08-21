@@ -40,5 +40,16 @@ jobs:
           if (-not (Test-Path $script)) {
             throw "redeploy.ps1 not found at $script. Set the DEPLOY_DIR repo variable to the checkout path."
           }
-          & $script -RepoRoot $dir -Branch main
+          # A host-header site (e.g. backups.labs.lbfoster.ai) does not answer to
+          # https://localhost/, so point the post-deploy health check at the real
+          # hostname via a HEALTH_URL repo variable. Falls back to localhost for a
+          # default-binding site.
+          $health = "${{ vars.HEALTH_URL }}"
+          $pool   = "${{ vars.APP_POOL }}"
+          $splat = @{ RepoRoot = $dir; Branch = "main" }
+          if (-not [string]::IsNullOrWhiteSpace($health)) { $splat.HealthUrl = $health }
+          # Which IIS app pool to recycle. Set an APP_POOL repo variable to your
+          # site's pool (e.g. backups.labs.lbfoster.ai); defaults to BackupDashboard.
+          if (-not [string]::IsNullOrWhiteSpace($pool)) { $splat.AppPoolName = $pool }
+          & $script @splat
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

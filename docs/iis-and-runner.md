@@ -76,6 +76,26 @@ runs the child with its CWD set to the site's physical path. So the site
 physical path is `...\backend`, and `web.config` lives there. The React bundle
 is still found by absolute path, so the SPA is served fine.
 
+### If the code and the IIS site live in different folders
+
+Common when the site was set up ahead of time, e.g. code at
+`C:\AIProjects\BackupsDashboard` but the IIS site pointing at
+`C:\inetpub\AI-Sites\backups`. Because of the CWD rule above, the site's
+physical path has to end up resolving to the `backend\` folder. `Install-IIS.ps1`
+gives you two ways, both keeping your existing site, app pool, hostname and cert:
+
+- **Repoint (default):** the script sets the site's physical path straight at
+  `<RepoRoot>\backend`. The `C:\inetpub\AI-Sites\backups` folder just goes
+  unused. Simplest to reason about — the site *is* the app.
+- **Junction (`-UseJunction`):** keep the `C:\inetpub\AI-Sites\backups` path on
+  the site and make that folder a directory junction to `<RepoRoot>\backend`.
+  IIS sees the inetpub path; the real content is `backend\`. Use this to keep a
+  tidy `C:\inetpub\AI-Sites\` layout. The folder must be empty (or already the
+  right junction) for the script to convert it.
+
+Either way `web.config` stays in `backend\` and everything resolves; you do not
+put a second `web.config` in the inetpub folder.
+
 **Keeping the 8am scheduler alive:** HttpPlatformHandler ties the Python
 process to the IIS worker. A worker with no traffic idles out by default - which
 would silently kill the scheduler and skip the morning collect and digest.
@@ -100,22 +120,37 @@ boot. **Don't undo those** - they're the difference between "answers at 8am" and
 
 ## Stand it up (once)
 
-From an **elevated** PowerShell:
+From an **elevated** PowerShell. If you already have a site + app pool (e.g.
+`backups.labs.lbfoster.ai`), pass their names so the script **adopts** them
+rather than creating new ones, and it will keep the cert you already bound:
 
 ```powershell
 cd C:\AIProjects\BackupsDashboard\deploy
 
-# List certs to find the thumbprint you want on 443:
-Get-ChildItem Cert:\LocalMachine\My | Format-Table Subject, Thumbprint
-
+# Repoint the existing site's physical path at the code (recommended):
 .\Install-IIS.ps1 `
-    -CertThumbprint AABBCCDDEEFF00112233... `
+    -SiteName "backups.labs.lbfoster.ai" `
+    -AppPoolName "backups.labs.lbfoster.ai" `
+    -HostHeader "backups.labs.lbfoster.ai" `
+    -ServiceAccount LBFOSTERCO\svc_backupdash
+
+# ...OR keep the inetpub folder and junction it to the code instead:
+.\Install-IIS.ps1 `
+    -SiteName "backups.labs.lbfoster.ai" `
+    -AppPoolName "backups.labs.lbfoster.ai" `
+    -HostHeader "backups.labs.lbfoster.ai" `
+    -UseJunction -JunctionPath "C:\inetpub\AI-Sites\backups" `
     -ServiceAccount LBFOSTERCO\svc_backupdash
 ```
 
+(Use the exact site and pool names from IIS Manager. To *replace* the bound
+cert, add `-CertThumbprint <thumbprint>`; find it with
+`Get-ChildItem Cert:\LocalMachine\My | Format-Table Subject, Thumbprint`.)
+
 The script verifies IIS + HttpPlatformHandler, builds the venv and UI if they're
-missing, creates the app pool (with the keep-alive settings above) and the site,
-binds your cert on 443, grants the identity file rights, and starts it. Then:
+missing, applies the keep-alive settings to the app pool, points the site at the
+code (repoint or junction), keeps/creates the cert on 443, grants the identity
+file rights, and starts it. Then:
 
 ```
 https://<server>/            the dashboard
@@ -188,15 +223,21 @@ push to main ──► GitHub queues the "Deploy to IIS" workflow
    account must be able to run `redeploy.ps1` and recycle the app pool, so make
    it a local admin (or a dedicated admin service account).
 
-3. Tell the workflow where the app is checked out. In GitHub, **Settings >
-   Secrets and variables > Actions > Variables**, add a repository variable:
+3. Tell the workflow where the app is checked out, and where to health-check.
+   In GitHub, **Settings > Secrets and variables > Actions > Variables**, add:
 
    ```
    DEPLOY_DIR = C:\AIProjects\BackupsDashboard
+   APP_POOL   = backups.labs.lbfoster.ai
+   HEALTH_URL = https://backups.labs.lbfoster.ai/api/meta
    ```
 
-   (If you skip this it defaults to `C:\ManagedClient\backupdashboard`, which
-   is *not* your path - so set it.)
+   `DEPLOY_DIR` defaults to `C:\ManagedClient\backupdashboard` (not your path),
+   so set it. `APP_POOL` is the IIS app pool the deploy recycles — set it to
+   your pool's exact name or the deploy will try to restart one called
+   `BackupDashboard`. `HEALTH_URL` matters because a host-header site does not
+   answer to `https://localhost/`; point it at the real hostname (resolvable on
+   the box) so the post-deploy check actually hits your site.
 
 That's it. Push to `main`, or use **Actions > Deploy to IIS > Run workflow** to
 redeploy on demand. A failed build or health check turns the run red and leaves
@@ -216,11 +257,15 @@ against.
 ## Everyday operations
 
 ```powershell
-Restart-WebAppPool BackupDashboard          # restart the app (reloads .env)
+# Use your actual app-pool name (e.g. backups.labs.lbfoster.ai):
+Restart-WebAppPool "backups.labs.lbfoster.ai"     # restart the app (reloads .env)
 Get-Content C:\AIProjects\BackupsDashboard\logs\httpplatform.log -Tail 50 -Wait   # uvicorn stdout
 
 # Redeploy by hand (same as the runner does):
-C:\AIProjects\BackupsDashboard\deploy\redeploy.ps1 -RepoRoot C:\AIProjects\BackupsDashboard
+C:\AIProjects\BackupsDashboard\deploy\redeploy.ps1 `
+    -RepoRoot C:\AIProjects\BackupsDashboard `
+    -AppPoolName "backups.labs.lbfoster.ai" `
+    -HealthUrl "https://backups.labs.lbfoster.ai/api/meta"
 ```
 
 The live log in the UI's **Collectors** page is a 600-line in-memory tail and

@@ -60,7 +60,22 @@ param(
     [string]$HostHeader = "",
     [int]$Port = 443,
     [string]$ServiceAccount,
-    [System.Security.SecureString]$ServiceAccountPassword
+    [System.Security.SecureString]$ServiceAccountPassword,
+
+    # --- Where IIS physically points -----------------------------------------
+    # HttpPlatformHandler runs the app with its working directory set to the
+    # site's physical path, and config.py loads .env by a RELATIVE path, so that
+    # path must resolve to the backend\ folder. Two supported ways:
+    #
+    #   (default) repoint: set the site's physical path straight at
+    #             <RepoRoot>\backend. Simplest; the site "is" the app.
+    #
+    #   -UseJunction: keep your existing physical path (e.g. the inetpub one you
+    #             already set up) and make it a directory junction to
+    #             <RepoRoot>\backend. IIS sees the inetpub path; the real content
+    #             is backend\. Use this to preserve a C:\inetpub\AI-Sites\ layout.
+    [switch]$UseJunction,
+    [string]$JunctionPath = "C:\inetpub\AI-Sites\backups"
 )
 
 $ErrorActionPreference = "Stop"
@@ -137,32 +152,66 @@ if ($ServiceAccount) {
     Write-Host "        for this identity to decrypt them." -ForegroundColor Yellow
 }
 
-Write-Host "=== [4/7] Site ($SiteName) -> $Backend ===" -ForegroundColor Cyan
-if (-not (Test-Path "IIS:\Sites\$SiteName")) {
-    New-Website -Name $SiteName -PhysicalPath $Backend -ApplicationPool $AppPoolName `
-        -Port $Port -Ssl -HostHeader $HostHeader | Out-Null
+# Resolve the physical path IIS will use (see the -UseJunction note above).
+if ($UseJunction) {
+    $needLink = $true
+    if (Test-Path $JunctionPath) {
+        $item = Get-Item $JunctionPath -Force
+        $tgt = ($item.Target | Select-Object -First 1)
+        if ($item.LinkType -eq "Junction" -and $tgt -eq $Backend) {
+            $needLink = $false
+        } elseif ((Get-ChildItem $JunctionPath -Force | Measure-Object).Count -eq 0) {
+            Remove-Item $JunctionPath -Force
+        } else {
+            throw "$JunctionPath exists, is not the expected junction, and is not empty. Move its contents aside, then re-run."
+        }
+    }
+    if ($needLink) {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $JunctionPath) | Out-Null
+        & cmd /c mklink /J "$JunctionPath" "$Backend" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "mklink /J $JunctionPath -> $Backend failed." }
+    }
+    $PhysPath = $JunctionPath
 } else {
-    Set-ItemProperty "IIS:\Sites\$SiteName" -Name physicalPath -Value $Backend
+    $PhysPath = $Backend
+}
+
+Write-Host "=== [4/7] Site ($SiteName) -> $PhysPath ===" -ForegroundColor Cyan
+$siteExists = Test-Path "IIS:\Sites\$SiteName"
+if ($siteExists) {
+    # Adopt the site you already made: only repoint it at the app and pool.
+    Set-ItemProperty "IIS:\Sites\$SiteName" -Name physicalPath -Value $PhysPath
     Set-ItemProperty "IIS:\Sites\$SiteName" -Name applicationPool -Value $AppPoolName
+    Write-Host "  adopted existing site"
+} else {
+    New-Website -Name $SiteName -PhysicalPath $PhysPath -ApplicationPool $AppPoolName `
+        -Port $Port -Ssl -HostHeader $HostHeader | Out-Null
+    Write-Host "  created site"
 }
 # preload so IIS starts the worker (and the app) at boot, not on first request.
 Set-ItemProperty "IIS:\Sites\$SiteName" -Name applicationDefaults.preloadEnabled -Value $true -ErrorAction SilentlyContinue
 
 Write-Host "=== [5/7] TLS certificate on $Port ===" -ForegroundColor Cyan
-if (-not $CertThumbprint) {
-    $dns = if ($HostHeader) { $HostHeader } else { $env:COMPUTERNAME }
-    Write-Host "  No -CertThumbprint given; creating a self-signed cert for '$dns'." -ForegroundColor Yellow
-    $cert = New-SelfSignedCertificate -DnsName $dns -CertStoreLocation "Cert:\LocalMachine\My"
-    $CertThumbprint = $cert.Thumbprint
+$existingHttps = Get-WebBinding -Name $SiteName -Protocol "https" -ErrorAction SilentlyContinue
+if ($existingHttps -and -not $CertThumbprint) {
+    # You already bound a cert for the hostname; leave it. Pass -CertThumbprint
+    # only if you want to replace it.
+    Write-Host "  existing https binding kept (pass -CertThumbprint to replace)"
+} else {
+    if (-not $CertThumbprint) {
+        $dns = if ($HostHeader) { $HostHeader } else { $env:COMPUTERNAME }
+        Write-Host "  No -CertThumbprint given; creating a self-signed cert for '$dns'." -ForegroundColor Yellow
+        $cert = New-SelfSignedCertificate -DnsName $dns -CertStoreLocation "Cert:\LocalMachine\My"
+        $CertThumbprint = $cert.Thumbprint
+    }
+    $binding = $existingHttps
+    if (-not $binding) {
+        New-WebBinding -Name $SiteName -Protocol "https" -Port $Port -HostHeader $HostHeader | Out-Null
+        $binding = Get-WebBinding -Name $SiteName -Protocol "https"
+    }
+    $binding.AddSslCertificate($CertThumbprint, "My")
+    Write-Host "  bound cert $CertThumbprint"
 }
-# Bind the cert to the site's https binding.
-$binding = Get-WebBinding -Name $SiteName -Protocol "https" -ErrorAction SilentlyContinue
-if (-not $binding) {
-    New-WebBinding -Name $SiteName -Protocol "https" -Port $Port -HostHeader $HostHeader | Out-Null
-    $binding = Get-WebBinding -Name $SiteName -Protocol "https"
-}
-$binding.AddSslCertificate($CertThumbprint, "My")
-Write-Host "  bound cert $CertThumbprint"
 
 Write-Host "=== [6/7] File permissions for $identityRef ===" -ForegroundColor Cyan
 # Read/execute on the tree; write on logs\ (stdout log) and backend\ (SQLite
