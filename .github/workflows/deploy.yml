@@ -1,0 +1,44 @@
+name: Deploy to IIS
+
+# Auto-update the Windows/IIS box on every push to the deploy branch.
+#
+# Runs on a SELF-HOSTED runner installed on that box (see deploy/Install-Runner.ps1
+# and docs/iis-and-runner.md). The runner is the only thing with a line of sight
+# to the server; GitHub's hosted runners cannot reach it.
+#
+# The job does NOT check the code out into the runner's workspace - it redeploys
+# the existing checkout in place by calling deploy\redeploy.ps1, which pulls,
+# rebuilds and recycles the IIS app pool. That keeps .env and the local database
+# exactly where IIS expects them.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}   # a manual "Run workflow" button for redeploy on demand
+
+# Never let two deploys run over each other; queue them instead.
+concurrency:
+  group: deploy-iis
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # These labels must match how the runner was registered. Install-Runner.ps1
+    # adds the 'backupdashboard' label; 'self-hosted' and 'windows' are automatic.
+    runs-on: [self-hosted, windows, backupdashboard]
+    steps:
+      - name: Redeploy in place
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          # Where the app is checked out on the server. Set a repo variable
+          # DEPLOY_DIR (Settings > Secrets and variables > Actions > Variables)
+          # to override this default.
+          $dir = "${{ vars.DEPLOY_DIR }}"
+          if ([string]::IsNullOrWhiteSpace($dir)) { $dir = "C:\ManagedClient\backupdashboard" }
+          $script = Join-Path $dir "deploy\redeploy.ps1"
+          if (-not (Test-Path $script)) {
+            throw "redeploy.ps1 not found at $script. Set the DEPLOY_DIR repo variable to the checkout path."
+          }
+          & $script -RepoRoot $dir -Branch main
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
