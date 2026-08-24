@@ -3,6 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!--
+      Tab icon, matching the asset/vuln dashboards. These live in public/ (not
+      src/assets/) on purpose: Vite hashes anything imported from src, and a
+      favicon has to sit at a stable URL because browsers cache it by path.
+
+      The mark is composited onto the light #f2f3f4 ground the brand tile uses:
+      the artwork carries black elements and is never recoloured, so on
+      transparency they vanish into a dark tab strip. Regenerated from
+      public/lbf-mark.png at 73% inset.
+
+      The ?v= is not superstition — Chromium keeps favicons in its own store,
+      keyed by URL, and a hard reload does not evict it. Bump the number when the
+      icon changes to force an already-visited origin to refetch.
+    -->
+    <link rel="icon" href="/favicon.ico?v=1" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=1" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=1" />
+
     <title>Backup Status Dashboard</title>
   </head>
   <body>
