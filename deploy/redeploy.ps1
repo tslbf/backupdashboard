@@ -116,12 +116,23 @@ try {
 Write-Host "  ok"
 
 Step "[4/5] Database (init-db)"
+# Non-fatal on purpose: the app calls init_db() in its startup lifespan
+# (see main.py), so the schema is created/migrated when the site boots. Running
+# it here is just a pre-flight, and it connects as the RUNNER's account - which
+# may not have SQL rights even when the app-pool account does. A failure here
+# must not sink the deploy; the health check below is the real gate.
 Push-Location $Backend
 try {
     & $Py -m app.cli init-db
-    if ($LASTEXITCODE -ne 0) { throw "init-db failed." }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  WARNING: init-db failed (exit $LASTEXITCODE) - continuing." -ForegroundColor Yellow
+        Write-Host "  The app initializes its own schema on startup; if the site is" -ForegroundColor Yellow
+        Write-Host "  healthy below this is harmless. If it 502s, grant this runner's" -ForegroundColor Yellow
+        Write-Host "  account SQL access (docs\sql\grant-access.sql)." -ForegroundColor Yellow
+    } else {
+        Write-Host "  ok"
+    }
 } finally { Pop-Location }
-Write-Host "  ok"
 
 if ($SkipAppPoolRecycle) {
     Write-Host "  (skipping app pool recycle / health check per -SkipAppPoolRecycle)"
