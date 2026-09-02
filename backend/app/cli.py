@@ -11,6 +11,8 @@
   python -m app.cli purge <source>     delete one source's events
   python -m app.cli protect            encrypt a secret for .env (Windows DPAPI)
   python -m app.cli probe veeam        diagnose a Veeam connection (TCP/TLS/HTTP)
+  python -m app.cli probe veeam --sessions [--find NAME]
+                                       what the collector sees in the session list
   python -m app.cli notify [--print]   send the morning digest (or just show it)
 """
 from __future__ import annotations
@@ -41,7 +43,20 @@ def main() -> int:
     probe = sub.add_parser("probe")
     probe.add_argument("target", choices=["veeam", "azure"])
     probe.add_argument(
-        "--hours", type=int, default=24, help="azure: window to survey (default 24)"
+        "--hours",
+        type=int,
+        default=None,
+        help="window to survey: azure defaults to 24, veeam --sessions to VEEAM_LOOKBACK_HOURS",
+    )
+    probe.add_argument(
+        "--sessions",
+        action="store_true",
+        help="veeam: list the sessions in the window and the machines their logs name; stores nothing",
+    )
+    probe.add_argument(
+        "--find",
+        metavar="NAME",
+        help="veeam: show every session name and log line that mentions NAME (implies --sessions)",
     )
     probe.add_argument(
         "--port",
@@ -74,7 +89,11 @@ def main() -> int:
     if args.command == "protect":
         return _protect(args)
     if args.command == "probe":
-        return _probe_veeam(args.port) if args.target == "veeam" else _probe_azure(args.hours)
+        if args.target == "veeam":
+            if args.sessions or args.find:
+                return _survey_veeam(args.port, args.hours, args.find)
+            return _probe_veeam(args.port)
+        return _probe_azure(args.hours or 24)
 
     init_db()
 
@@ -343,6 +362,140 @@ def _probe_veeam(port: int | None = None) -> int:
             print("\n  The collector's current TLS settings work against this host.")
     print()
     return worst
+
+
+def _survey_veeam(port: int | None, hours: int | None, find: str | None) -> int:
+    """Answer "why isn't machine X on the dashboard?" from the session list.
+
+    The collector only ever knows a machine by name, and the only place the
+    name appears is a session's log. This prints what each host's log actually
+    said in the window — which session types it reported and which the
+    collector reads, which machines were named, which sessions named none —
+    and, with `--find`, every line that mentions the machine you are missing.
+    Nothing is stored.
+    """
+    from .collectors.veeam import survey_sessions
+
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    settings = get_settings()
+    hosts = settings.veeam_server_list()
+    if not hosts:
+        print("VEEAM_SERVERS is empty in backend\\.env — nothing to survey")
+        return 1
+    if port:
+        settings = settings.model_copy(update={"veeam_port": port})
+    hours = hours or settings.veeam_lookback_hours
+
+    worst = 0
+    for host in hosts:
+        print(f"\n=== {host}:{settings.veeam_port} — sessions of the last {hours}h ===")
+        try:
+            result = survey_sessions(settings, host, hours, find)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  failed: {type(exc).__name__}: {exc}")
+            print("  (connection problems: run `probe veeam` without --sessions)")
+            worst = 1
+            continue
+        _print_survey(result)
+        if result["dropped"] or (find and not result["hits"]):
+            worst = 1
+    print()
+    return worst
+
+
+def _print_survey(result: dict) -> None:
+    types = result["types"]
+    if not types:
+        print("  no sessions at all in the window — the collector had nothing to read.")
+        print("  A longer window: --hours 720")
+        return
+
+    print("  session types the host reported (kept = a finished backup session the collector reads):")
+    for kind, tally in sorted(types.items(), key=lambda kv: -kv[1]["seen"]):
+        print(f"    {kind:<34} {tally['seen']:>5} seen  {tally['kept']:>5} kept")
+
+    machines = sorted(result["machines"])
+    print(f"\n  machines the logs named ({len(machines)}):")
+    if machines:
+        line, lines = "", []
+        for name in machines:
+            if len(line) + len(name) + 2 > 92:
+                lines.append(line)
+                line = ""
+            line += (", " if line else "") + name
+        lines.append(line)
+        for text in lines:
+            print(f"    {text}")
+    else:
+        print("    (none — no kept session's log had a `Processing <name>` line)")
+
+    kept = [s for s in result["sessions"] if s["skipped"] is None]
+    print(f"\n  sessions the collector kept ({len(kept)}), newest first:")
+    for s in kept[:60]:
+        end = str(s["end"] or "")[:16].replace("T", " ")
+        if s["log_error"]:
+            filed = f"log unreadable: {s['log_error']}"
+        elif s["via"] == "log":
+            filed = ", ".join(s["names"])
+        elif s["via"] == "job":
+            filed = f"{s['names'][0]}  (from the JOB NAME — the log named no machine)"
+        else:
+            filed = "DROPPED — the log named no machine and the job name is not a hostname"
+        print(f"    {end}  {s['type']:<16} {str(s['result'] or '?'):<8} {str(s['job'])!r:<34} -> {filed}")
+    if len(kept) > 60:
+        print(f"    … and {len(kept) - 60} more")
+
+    if result["fallback"] or result["dropped"]:
+        print("\n  sessions whose log named no machine:")
+        for job, n in result["fallback"].most_common():
+            print(f"    {job!r:<40} x{n:<3} filed under the job name")
+        for job, n in result["dropped"].most_common():
+            print(f"    {job!r:<40} x{n:<3} DROPPED")
+        print(
+            "  A job that protects several machines and is filed under its own name is\n"
+            "  reporting none of them. Send the kept-session lines above on if the log\n"
+            "  wording differs from `Processing <name>`."
+        )
+
+    find = result["find"]
+    if not find:
+        return
+    hits = result["hits"]
+    print(f"\n  --find {find!r}:")
+    if not hits:
+        print(
+            f"    {find!r} does not appear in any session name, log title or description\n"
+            f"    on this host in the last {result['hours']}h. Either its job has not run in that\n"
+            "    window (--hours 720 looks back a month), it is protected by a different\n"
+            "    VBR server than the ones in VEEAM_SERVERS, or its sessions are of a type\n"
+            "    this API version does not list — Veeam Agent sessions (AgentBackup,\n"
+            "    EndpointBackup) exist only in the 1.3 vocabulary; check the type list above."
+        )
+        return
+    for h in hits:
+        end = str(h["end"] or "")[:16].replace("T", " ")
+        state = "kept" if h["skipped"] is None else f"SKIPPED: {h['skipped']}"
+        print(f"    {end}  {h['type']:<16} {str(h['job'])!r:<34} [{state}]")
+        print(f"        {h['field']}: {h['text']}")
+    needle = find.strip().lower()
+    named = any(needle in n.lower() for s in result["sessions"] for n in s["names"])
+    if named:
+        print(
+            "\n  >>> The collector reads this machine. If it is still not on the dashboard,\n"
+            "      check the Servers page with hidden servers included, then run\n"
+            "      `python -m app.cli collect veeam` and `refresh`."
+        )
+    elif all(h["skipped"] for h in hits):
+        print(
+            "\n  >>> Every mention is in a session type the collector skips. Send this\n"
+            "      output on: the session type needs adding to the collector."
+        )
+    else:
+        print(
+            "\n  >>> The machine is in a kept session but its log line did not match the\n"
+            "      `Processing <name>` pattern. Send this output on — the exact wording\n"
+            "      above is what the pattern needs."
+        )
 
 
 def _probe_azure(hours: int) -> int:

@@ -248,9 +248,22 @@ Backup-specific decisions on top of the theme:
 - **Veeam**: one result per *session*, and a session can hold several VMs, so
   every machine inherits the session verdict. Carried over from the PowerShell
   it replaces; per-object results need task-session endpoints this API version
-  doesn't expose. Server names come from paging the session's log and regexing
-  the messages — same patterns the script used. Self-signed cert by default
-  (`VEEAM_VERIFY_TLS=false`).
+  doesn't expose. **Server names come from the session log, and the log's shape
+  is not what the PowerShell regexed.** `GET /sessions/{id}/logs` answers
+  `{"totalRecords", "records"}` — not `{"data"}` like the list endpoints — with
+  no skip/limit, and each record is `{id, status, startTime, updateTime, title,
+  description}`. The per-machine line is a *title* reading exactly
+  `Processing winsrv100`: no quotes, no "VM"/"computer". Get any of that wrong
+  and nothing errors: the log reads as empty, every session falls back to being
+  filed under its **job name** (`_JOB_PATTERNS`), and a machine that shares a
+  job with others does not exist. That is how a newly added server went
+  unreported for weeks while the dashboard looked healthy. The collector now
+  says, once per host, which sessions' logs named no machine;
+  **`cli probe veeam --sessions --find <name>`** lists the session types the
+  host reports, the machines the logs name, and every log line mentioning a
+  name, without storing anything. Agent sessions (`AgentBackup`,
+  `EndpointBackup`) are only in the API's 1.3 vocabulary. Self-signed cert by
+  default (`VEEAM_VERIFY_TLS=false`).
 - **N-able Cove**: `EnumerateAccountStatistics` returns *current state*, not
   history — the collector only ever sees the latest run per device, so Cove
   history accumulates from first poll. There is no lookback to raise: a night

@@ -4,12 +4,26 @@ Port of Pull-VeeamJobStatus.ps1. Same shape: OAuth2 password grant, page the
 session list newest-first, keep finished backup sessions, then read each
 session's log to find out which machines it actually protected.
 
+The log is the only thing here that names a machine, so its shape matters — and
+it is not what the PowerShell saw. `GET /api/v1/sessions/{id}/logs` answers
+`{"totalRecords": n, "records": [...]}`, not the `{"data": [...]}` of the list
+endpoints, and each record is `{id, status, startTime, updateTime, title,
+description}` with the per-machine line being a *title* that reads exactly
+`Processing winsrv100`. Reading the wrong key, the wrong field, or a pattern
+that wants quotes does not error: the log is simply empty, every session falls
+back to being filed under its *job* name, and a machine that shares a job with
+others does not exist as far as the dashboard is concerned. That is how a
+server added to Veeam went unreported for weeks.
+`python -m app.cli probe veeam --sessions --find <name>` shows what the log
+actually says about a machine.
+
 Known limitation, carried over from the script it replaces: Veeam reports one
 result per *session*, and a session can protect several VMs. Every machine in a
 session therefore inherits that session's verdict, so one failed VM in a
-five-VM job shows all five as failed. Per-object results would need the task-
-session endpoints, which aren't in this API version's surface — until then a
-Veeam failure is a pointer to the job, not proof about each guest.
+five-VM job shows all five as failed. Per-object results live on
+`/api/v1/sessions/{id}/taskSessions`, which the API grew in 1.2-rev1 and this
+collector does not read yet — until then a Veeam failure is a pointer to the
+job, not proof about each guest.
 """
 from __future__ import annotations
 
@@ -17,6 +31,10 @@ import logging
 import re
 import socket
 import ssl
+from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from socket import timeout as socket_timeout
 
@@ -24,7 +42,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from ..config import Settings
-from ..ingest import ServerCache, upsert_event
+from ..ingest import ServerCache, normalize_name, upsert_event
 from ..outcomes import normalize
 from ..timeframes import utcnow
 from .base import Collector
@@ -32,7 +50,6 @@ from .base import Collector
 log = logging.getLogger(__name__)
 
 PAGE_SIZE = 500
-LOG_PAGE_SIZE = 500
 
 
 # One knob, the same shape as the PowerShell's
@@ -272,17 +289,54 @@ def scan_ports(host: str, timeout: float = 4.0) -> list[dict]:
     return rows
 
 
-# Fields on a log line that name the object being processed, cheapest first.
+# Fields on a log record that would name the object outright. None of them
+# exist on the VBR REST API's SessionLogRecordModel; they are kept so a record
+# from another shape (Enterprise Manager, a hand-built fixture) is still read.
 _NAME_FIELDS = ("objectName", "entityName", "vmName", "computerName", "objectDisplayName")
 
-# Message patterns, in the order the PowerShell tried them.
-_NAME_PATTERNS = [
+# Where a log record's text lives. The VBR REST API record is exactly
+# {id, status, startTime, updateTime, title, description}, and the per-machine
+# line is the *title*. `message` is what the Enterprise Manager API called it
+# and what the PowerShell regexed — it is not on this API's records at all.
+_TEXT_FIELDS = ("title", "description", "message")
+
+# What a job session's log says about each machine it protects is exactly
+#
+#     Processing winsrv100
+#
+# — one record per object; no quotes, no "VM" or "computer", the name and
+# nothing else. (The API reference's own example log: "Processing ubuntu88",
+# "Processing winsrv100", "Processing dbserver01".) Every other record in the
+# same log is about the job rather than a machine — "Job started at …",
+# "Building list of machines to process", "VM size: 86 GB (48 GB used)",
+# "All VMs have been queued for processing", "Load: Source 86% > Proxy 54% > …",
+# "Primary bottleneck: Source", "Job finished with warning at …" — and none of
+# them begins with "Processing".
+_PROCESSING = re.compile(r"^\s*Processing\s+(.+?)\s*$", re.I)
+# Words that can follow "Processing" without naming a machine. A summary line
+# worded "Processing finished at …" must not create a server called FINISHED.
+_NOT_A_NAME = re.compile(
+    r"^(?:finished|started|completed|stopped|failed|skipped|of|for|the|has|is|was|"
+    r"will|VMs?|machines?|objects?|items?|tasks?)\b",
+    re.I,
+)
+# A failed object sometimes carries its reason on the same line.
+_TRAILING_REASON = re.compile(r"\s+(?:Error|Warning|Details?)\s*:.*$", re.I)
+
+# The wordier phrasings, in the order the PowerShell tried them. None of these
+# matches the bare `Processing <name>` above — which is why, before that pattern
+# existed, no session log ever yielded a machine.
+_STRICT_PATTERNS = [
     re.compile(r"Processing\s+(?:VM|computer|object|server)\s+'([^']+)'", re.I),
     re.compile(r"Processed\s+(?:VM|computer|object|server)\s+'([^']+)'", re.I),
     re.compile(r"'(.*?)'\s+processing\s+finished", re.I),
     re.compile(r"Job finished for (?:computer|object|server)\s+'([^']+)'", re.I),
     re.compile(r"Starting backup for (?:computer|server)\s+'([^']+)'", re.I),
     re.compile(r"Finished backup for (?:computer|server)\s+'([^']+)'", re.I),
+]
+# Loose enough to misread an error's free text ("Object 'C:\…'"), so these are
+# only tried on a record's title, never on its description.
+_LOOSE_PATTERNS = [
     re.compile(r"Object\s+'([^']+)'", re.I),
     re.compile(r"(?:Guest|Machine)\s*[:=]\s*([A-Za-z0-9._-]+)", re.I),
 ]
@@ -308,47 +362,101 @@ def parse_dt(value: str | None) -> datetime | None:
     return parsed.astimezone(timezone.utc).replace(tzinfo=None)
 
 
-def extract_names(log_items: list[dict], job_name: str | None) -> list[str]:
+def name_from_text(text: str, *, loose: bool = True) -> str | None:
+    """The machine one log line is about, or None if the line is about the job."""
+    match = _PROCESSING.match(text)
+    # A quote in the remainder means one of the wordier phrasings below, which
+    # know where the name ends; the bare form is the name and nothing else.
+    if match and "'" not in match.group(1) and '"' not in match.group(1):
+        candidate = _TRAILING_REASON.sub("", match.group(1)).strip()
+        if candidate and not _NOT_A_NAME.match(candidate):
+            return candidate
+    for pattern in _STRICT_PATTERNS + (_LOOSE_PATTERNS if loose else []):
+        match = pattern.search(text)
+        if match:
+            return match.group(1)
+    return None
+
+
+def names_from_log(log_items: list[dict]) -> list[str]:
+    """Every machine a session's log names, in log order, deduplicated."""
     names: list[str] = []
     seen: set[str] = set()
 
-    def add(value: str | None) -> None:
-        if value and value.strip() and value.strip() not in seen:
-            seen.add(value.strip())
-            names.append(value.strip())
+    def add(value: object) -> None:
+        text = str(value).strip() if value is not None else ""
+        if text and text not in seen:
+            seen.add(text)
+            names.append(text)
 
     for item in log_items:
-        for field in _NAME_FIELDS:
-            add(item.get(field))
-        message = item.get("message")
-        if not message:
-            continue
-        for pattern in _NAME_PATTERNS:
-            match = pattern.search(str(message))
-            if match:
-                add(match.group(1))
-                break
-
-    if not names and job_name:
-        for pattern in _JOB_PATTERNS:
-            match = pattern.match(job_name.strip())
-            if match:
-                add(match.group(1) if match.groups() else job_name.strip())
-                break
+        for fld in _NAME_FIELDS:
+            add(item.get(fld))
+        for fld in _TEXT_FIELDS:
+            text = item.get(fld)
+            if not text:
+                continue
+            found = name_from_text(str(text), loose=(fld != "description"))
+            if found:
+                add(found)
+                break  # one record is about one object; its description adds nothing
     return names
 
 
-def _is_backup_session(session_row: dict) -> bool:
-    """Finished backup sessions only — configuration backups are not machines."""
+def name_from_job(job_name: str | None) -> str | None:
+    """A single-machine job named after its machine — the last resort."""
+    if not job_name:
+        return None
+    for pattern in _JOB_PATTERNS:
+        match = pattern.match(job_name.strip())
+        if match:
+            return match.group(1) if match.groups() else job_name.strip()
+    return None
+
+
+def session_machines(log_items: list[dict], job_name: str | None) -> tuple[list[str], str]:
+    """The machines a session is filed under, and where they came from.
+
+    Returns `(names, via)` with `via` one of `log` (the log named them — the
+    normal case), `job` (the log named nothing and the job name looks like a
+    hostname) or `none` (nothing to file it under; the session is dropped).
+    """
+    names = names_from_log(log_items)
+    if names:
+        return names, "log"
+    fallback = name_from_job(job_name)
+    if fallback:
+        return [fallback], "job"
+    return [], "none"
+
+
+def extract_names(log_items: list[dict], job_name: str | None) -> list[str]:
+    return session_machines(log_items, job_name)[0]
+
+
+def skip_reason(session_row: dict) -> str | None:
+    """Why the collector ignores a session, or None if it reads it.
+
+    Finished backup sessions only. `sessionType` is an enum whose backup members
+    all carry the word — BackupJob, AgentBackup, EndpointBackup, BackupCopyJob,
+    PlatformBackupJob — and whose others do not (ReplicaJob, RestoreVm,
+    SureBackup is the exception and is a test, not a backup, but it names no
+    machine as `Processing …` so nothing is filed from it). ConfigurationBackup
+    is the VBR server backing up its own configuration: not a machine.
+    """
     if not session_row.get("endTime"):
-        return False
+        return "still running"
     kind = f"{session_row.get('subtype') or ''} {session_row.get('sessionType') or ''}"
     if "backup" not in kind.lower():
-        return False
+        return "not a backup session"
     name = str(session_row.get("name") or "")
     if re.search(r"configuration", kind, re.I) or re.search(r"\bconfiguration\b", name, re.I):
-        return False
-    return True
+        return "configuration backup"
+    return None
+
+
+def _is_backup_session(session_row: dict) -> bool:
+    return skip_reason(session_row) is None
 
 
 def _session_result(session_row: dict) -> str | None:
@@ -358,6 +466,179 @@ def _session_result(session_row: dict) -> str | None:
     if isinstance(result, str) and result:
         return result
     return session_row.get("status")
+
+
+def _hostname(host: str) -> str:
+    return host.strip().replace("https://", "").replace("http://", "")
+
+
+@contextmanager
+def open_client(
+    settings: Settings, host: str, *, transport: httpx.BaseTransport | None = None
+) -> Iterator[httpx.Client]:
+    """An authenticated client for one VBR host, closed on exit.
+
+    A context manager rather than a bare client because httpx will not `with` a
+    client that has already sent a request, and the token request has.
+    """
+    client = httpx.Client(
+        base_url=f"https://{_hostname(host)}:{settings.veeam_port}",
+        timeout=120,
+        verify=tls_context(settings.veeam_verify_tls, settings.veeam_tls_version),
+        headers={"Accept": "application/json", "x-api-version": settings.veeam_api_version},
+        transport=transport,
+    )
+    try:
+        token_resp = client.post(
+            "/api/oauth2/token",
+            data={
+                "grant_type": "password",
+                "username": settings.veeam_username,
+                "password": settings.veeam_password,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        token_resp.raise_for_status()
+        client.headers["Authorization"] = f"Bearer {token_resp.json()['access_token']}"
+        yield client
+    finally:
+        client.close()
+
+
+def iter_sessions(client: httpx.Client, since: datetime) -> Iterator[tuple[dict, datetime]]:
+    """Sessions newest-first back to `since`, as (row, start-in-UTC) pairs."""
+    skip = 0
+    while True:
+        resp = client.get(
+            "/api/v1/sessions",
+            params={
+                "orderColumn": "creationTime",
+                "orderAsc": "false",
+                "limit": PAGE_SIZE,
+                "skip": skip,
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json().get("data") or []
+        if not data:
+            return
+        for row in data:
+            start = parse_dt(row.get("creationTime") or row.get("startTime"))
+            if start is None:
+                continue
+            # Newest-first, so the first row older than the window ends it.
+            if start < since:
+                return
+            yield row, start
+        if len(data) < PAGE_SIZE:
+            return
+        skip += PAGE_SIZE
+
+
+def fetch_session_log(client: httpx.Client, session_id: str) -> list[dict]:
+    """Every log record of one session.
+
+    The endpoint returns the whole log in one response, shaped
+    `{"totalRecords": n, "records": [...]}` — not the `{"data": [...]}` the list
+    endpoints use — and takes no skip/limit. Reading `data` here found nothing,
+    silently, for every session: the log was always an empty list, so the only
+    names the collector ever produced came from the job-name fallback, and a
+    machine without a job named after it did not exist.
+    """
+    resp = client.get(f"/api/v1/sessions/{session_id}/logs")
+    resp.raise_for_status()
+    body = resp.json()
+    records = body.get("records")
+    if records is None:
+        records = body.get("data") or []
+    return list(records)
+
+
+@dataclass
+class HostStats:
+    """What one host's collection did — the numbers that make silence visible."""
+
+    sessions: int = 0
+    events: int = 0
+    machines: set[str] = field(default_factory=set)
+    # Job names of sessions whose log named no machine, by what happened next.
+    fallback: Counter = field(default_factory=Counter)  # filed under the job name
+    dropped: Counter = field(default_factory=Counter)  # nothing to file under
+    log_failures: int = 0
+
+
+def survey_sessions(
+    settings: Settings,
+    host: str,
+    hours: int,
+    find: str | None = None,
+    *,
+    transport: httpx.BaseTransport | None = None,
+) -> dict:
+    """What the collector would make of one host's last `hours` of sessions,
+    without storing any of it.
+
+    Answers "why is machine X not on the dashboard?" with a measurement: which
+    session types the host reported and which the collector reads, which
+    machines the logs named, which sessions named none — and, with `find`,
+    every session name and log line that mentions X, kept or skipped.
+    """
+    since = utcnow() - timedelta(hours=hours)
+    needle = find.strip().lower() if find and find.strip() else None
+    out: dict = {
+        "host": _hostname(host),
+        "hours": hours,
+        "find": find,
+        "types": {},
+        "sessions": [],
+        "machines": set(),
+        "fallback": Counter(),
+        "dropped": Counter(),
+        "hits": [],
+    }
+    with open_client(settings, host, transport=transport) as client:
+        for row, _start in iter_sessions(client, since):
+            kind = str(row.get("sessionType") or "?")
+            reason = skip_reason(row)
+            job = row.get("name")
+            tally = out["types"].setdefault(kind, {"seen": 0, "kept": 0})
+            tally["seen"] += 1
+            entry = {
+                "end": row.get("endTime"),
+                "type": kind,
+                "job": job,
+                "result": _session_result(row),
+                "skipped": reason,
+                "names": [],
+                "via": None,
+                "log_error": None,
+            }
+            if needle and job and needle in str(job).lower():
+                out["hits"].append({**entry, "field": "session name", "text": str(job)})
+
+            items: list[dict] = []
+            if reason is None or needle:
+                try:
+                    items = fetch_session_log(client, str(row.get("id")))
+                except httpx.HTTPError as exc:
+                    entry["log_error"] = f"{type(exc).__name__}: {exc}"
+            if needle:
+                for item in items:
+                    for fld in _TEXT_FIELDS:
+                        text = item.get(fld)
+                        if text and needle in str(text).lower():
+                            out["hits"].append({**entry, "field": fld, "text": str(text)[:200]})
+            if reason is None:
+                tally["kept"] += 1
+                names, via = session_machines(items, job)
+                entry["names"], entry["via"] = names, via
+                out["machines"].update(normalize_name(n) or n for n in names)
+                if via == "job":
+                    out["fallback"][str(job or "?")] += 1
+                elif via == "none":
+                    out["dropped"][str(job or "?")] += 1
+            out["sessions"].append(entry)
+    return out
 
 
 class VeeamCollector(Collector):
@@ -407,68 +688,60 @@ class VeeamCollector(Collector):
         host: str,
         since: datetime,
     ) -> int:
-        base = f"https://{host.strip().replace('https://', '').replace('http://', '')}:{settings.veeam_port}"
-        headers = {"Accept": "application/json", "x-api-version": settings.veeam_api_version}
-
-        with httpx.Client(
-            base_url=base,
-            timeout=120,
-            verify=tls_context(settings.veeam_verify_tls, settings.veeam_tls_version),
-            headers=headers,
-        ) as client:
-            token_resp = client.post(
-                "/api/oauth2/token",
-                data={
-                    "grant_type": "password",
-                    "username": settings.veeam_username,
-                    "password": settings.veeam_password,
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
-            token_resp.raise_for_status()
-            client.headers["Authorization"] = f"Bearer {token_resp.json()['access_token']}"
-
-            count = 0
-            skip = 0
-            while True:
-                resp = client.get(
-                    "/api/v1/sessions",
-                    params={
-                        "orderColumn": "creationTime",
-                        "orderAsc": "false",
-                        "limit": PAGE_SIZE,
-                        "skip": skip,
-                    },
+        stats = HostStats()
+        with open_client(settings, host) as client:
+            for row, start in iter_sessions(client, since):
+                if skip_reason(row) is not None:
+                    continue
+                end = parse_dt(row.get("endTime"))
+                session_id = row.get("id")
+                if end is None or not session_id:
+                    continue
+                stats.sessions += 1
+                stats.events += self._ingest_session(
+                    session, cache, client, row, session_id, start, end, stats
                 )
-                resp.raise_for_status()
-                data = resp.json().get("data") or []
-                if not data:
-                    break
+                if stats.sessions % PAGE_SIZE == 0:
+                    session.commit()
 
-                reached_cutoff = False
-                for row in data:
-                    start = parse_dt(row.get("creationTime") or row.get("startTime"))
-                    if start is None:
-                        continue
-                    # Newest-first, so the first row older than the window ends it.
-                    if start < since:
-                        reached_cutoff = True
-                        break
-                    if not _is_backup_session(row):
-                        continue
-                    end = parse_dt(row.get("endTime"))
-                    session_id = row.get("id")
-                    if end is None or not session_id:
-                        continue
-                    count += self._ingest_session(
-                        session, cache, client, row, session_id, start, end
-                    )
-
-                if reached_cutoff or len(data) < PAGE_SIZE:
-                    break
-                skip += PAGE_SIZE
-                session.commit()
-            return count
+        log.info(
+            "veeam %s: %s backup sessions since %s UTC named %s machines (%s events)",
+            _hostname(host),
+            stats.sessions,
+            since.strftime("%Y-%m-%d %H:%M"),
+            len(stats.machines),
+            stats.events,
+        )
+        # A session whose log names no machine is the failure mode that hides a
+        # server, and it is silent by nature — so it gets said out loud, once
+        # per host, with the job names, and with the command that explains it.
+        if stats.fallback:
+            log.warning(
+                "veeam %s: %s session(s) whose log named no machine were filed under "
+                "the job name instead: %s. If that job protects more than one "
+                "machine, those machines are not being reported — run "
+                "`python -m app.cli probe veeam --sessions --find <machine>`.",
+                _hostname(host),
+                sum(stats.fallback.values()),
+                _summarize(stats.fallback),
+            )
+        if stats.dropped:
+            log.warning(
+                "veeam %s: %s session(s) dropped — the log named no machine and the "
+                "job name is not a hostname: %s. Run `python -m app.cli probe veeam "
+                "--sessions` to see what those logs say.",
+                _hostname(host),
+                sum(stats.dropped.values()),
+                _summarize(stats.dropped),
+            )
+        if stats.log_failures:
+            log.warning(
+                "veeam %s: the log of %s session(s) could not be read; those sessions "
+                "were skipped",
+                _hostname(host),
+                stats.log_failures,
+            )
+        return stats.events
 
     def _ingest_session(
         self,
@@ -479,16 +752,22 @@ class VeeamCollector(Collector):
         session_id: str,
         start: datetime,
         end: datetime,
+        stats: HostStats | None = None,
     ) -> int:
+        stats = stats if stats is not None else HostStats()
         try:
             log_items = self._fetch_logs(client, session_id)
         except httpx.HTTPError as exc:
             log.warning("veeam logs failed for session %s: %s", session_id, exc)
+            stats.log_failures += 1
             return 0
 
         job_name = row.get("name")
-        names = extract_names(log_items, job_name)
-        if not names:
+        names, via = session_machines(log_items, job_name)
+        if via == "job":
+            stats.fallback[str(job_name or "?")] += 1
+        elif via == "none":
+            stats.dropped[str(job_name or "?")] += 1
             return 0
 
         raw = _session_result(row)
@@ -500,6 +779,7 @@ class VeeamCollector(Collector):
             server = cache.get(name)
             if server is None:
                 continue
+            stats.machines.add(server.name)
             upsert_event(
                 session,
                 cache,
@@ -518,16 +798,11 @@ class VeeamCollector(Collector):
         return written
 
     def _fetch_logs(self, client: httpx.Client, session_id: str) -> list[dict]:
-        items: list[dict] = []
-        skip = 0
-        while True:
-            resp = client.get(
-                f"/api/v1/sessions/{session_id}/logs",
-                params={"limit": LOG_PAGE_SIZE, "skip": skip, "orderAsc": "true"},
-            )
-            resp.raise_for_status()
-            page = resp.json().get("data") or []
-            items.extend(page)
-            if len(page) < LOG_PAGE_SIZE:
-                return items
-            skip += LOG_PAGE_SIZE
+        return fetch_session_log(client, session_id)
+
+
+def _summarize(counter: Counter, limit: int = 8) -> str:
+    parts = [f"{job!r} x{n}" for job, n in counter.most_common(limit)]
+    if len(counter) > limit:
+        parts.append(f"and {len(counter) - limit} more")
+    return ", ".join(parts)

@@ -346,6 +346,38 @@ test is to **run the same probe from the machine the PowerShell script runs
 on**. Working there and not here makes it the network path, not the code — and
 the fix is to extend that host's firewall rule to this one.
 
+**A server backed up by Veeam never appears on the dashboard**
+The collector only knows a machine by name, and the only place the name
+appears is the job session's log. Ask what the log said:
+
+```bat
+.venv\Scripts\python.exe -m app.cli probe veeam --sessions --find NEWSRV01
+```
+
+That authenticates, walks the sessions in the lookback window and prints, per
+VBR host: the session types the host reported and which the collector reads,
+the machines the logs named, each kept session with what it was filed under, and
+every session name or log line that mentions the machine. Nothing is stored.
+
+- **named in a kept session, and in its machine list** — the collector reads
+  it. Look on the Servers page with hidden servers included, then run
+  `collect veeam` and `refresh`.
+- **`(from the JOB NAME — the log named no machine)`** — the log had no
+  `Processing <name>` lines, so the session was filed under the job's name. A
+  job protecting several machines reports none of them this way. Send the output
+  on; the wording of the log lines is what the pattern needs.
+- **every mention is `SKIPPED`** — the machine's sessions are of a type the
+  collector does not read (a replica, a copy, a session type it has not met).
+  Send the output on.
+- **not found at all** — its job has not run in the window (`--hours 720` looks
+  back a month), it is on a VBR server not in `VEEAM_SERVERS`, or its sessions
+  are of a type this API version does not list. Veeam Agent sessions
+  (`AgentBackup`, `EndpointBackup`) are only in the 1.3 API vocabulary.
+
+The collector also says so itself now: after each host it logs the sessions
+whose log named no machine, with their job names, on the Collectors page.
+
+
 **Azure runs for many minutes, or the record count runs into the tens of thousands**
 Sixty servers should produce a few hundred jobs in a 96-hour window, not 30,000.
 See what is actually in the vaults, without storing any of it:
