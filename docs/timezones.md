@@ -49,6 +49,17 @@ All five land on Wednesday. Wednesday morning you open the dashboard and see one
 coherent review, with the UK servers in it — even though one of them finished
 during your Tuesday afternoon.
 
+### Keyed by the morning, labelled by the evening
+
+The report date is the *key* — in the database, the API and `?date=` URLs — and
+it names the morning a night ends. Every **label** in the UI and the digest
+names the evening it began instead: report date Wednesday is shown as
+"Tue, Oct 27" / "Night of Tuesday", because that is what people call the night a
+23:00 Tuesday job ran on. Labelling by the key made every row look a day late.
+The shift is presentation only (`nightOf` / `fmtNight` in `components.tsx`,
+`night_label` in `notify.py`); the date picker shows evenings and converts back
+with `reportDateFor`. Never shift the key itself.
+
 ## What "last night" means at 4pm
 
 `current_report_date` is deliberately **your local calendar date**, not

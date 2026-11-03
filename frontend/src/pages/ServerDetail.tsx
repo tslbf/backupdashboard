@@ -12,10 +12,11 @@ import {
   chartCounts,
   chartLegend,
   fmtDateTime,
-  fmtDay,
-  fmtTime,
+  fmtDayTime,
+  fmtNight,
   nfmt,
   useSidebar,
+  zoneOffsetMinutes,
 } from "../components";
 
 export default function ServerDetail() {
@@ -100,7 +101,23 @@ export default function ServerDetail() {
   if (!data) return <Skeleton height={400} />;
 
   const differs = meta && data.timezone !== meta.display_timezone;
-  const city = data.timezone.split("/")[1]?.replace("_", " ") ?? data.timezone;
+  const city = data.timezone.split("/").pop()?.replace(/_/g, " ") ?? data.timezone;
+
+  // How far apart the two clocks are *today*, in words — "5 hours ahead" says
+  // what "GMT (UTC+0) vs EST (UTC-5)" left the reader to subtract.
+  const gap = differs ? zoneOffsetMinutes(data.timezone) - zoneOffsetMinutes(meta!.display_timezone) : 0;
+  const gapHours = Math.abs(gap) / 60;
+  const gapWords =
+    gap === 0
+      ? "currently on the same clock as"
+      : `currently ${Number.isInteger(gapHours) ? gapHours : gapHours.toFixed(1)} hour${
+          gapHours === 1 ? "" : "s"
+        } ${gap > 0 ? "ahead of" : "behind"}`;
+  const elevenLocalForViewer = (() => {
+    const mins = (((23 * 60 - gap) % 1440) + 1440) % 1440;
+    const at = new Date(2000, 0, 1, Math.floor(mins / 60), mins % 60);
+    return at.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  })();
 
   return (
     <>
@@ -127,10 +144,10 @@ export default function ServerDetail() {
 
       {differs && (
         <div className="warn-banner">
-          This server runs on <b>{data.timezone}</b>, not your {meta!.display_timezone}. Its
-          backups are filed by <b>its own night</b>, so a job finishing at 23:00 local appears in
-          the same review as your local overnight jobs even though the wall-clock times differ by{" "}
-          {data.timezone_label} vs {meta!.display_timezone_label}.
+          This server runs on <b>{data.timezone}</b>, {gapWords} your{" "}
+          {meta!.display_timezone}. Its backups are filed by <b>its own night</b> — noon to noon{" "}
+          {city} time — so a job finishing at 23:00 {city} ({elevenLocalForViewer} your time) lands
+          on the same night as your own overnight jobs.
         </div>
       )}
 
@@ -270,8 +287,9 @@ export default function ServerDetail() {
           <div>
             <h2>Recent runs</h2>
             <div className="card-hint">
-              Times in your timezone, with {data.timezone.split("/")[1]?.replace("_", " ")} local
-              time alongside.
+              Times in your timezone{differs ? `, with ${city} local time alongside` : ""}. Each
+              night is named by the evening it starts and runs until noon the next day, so a
+              run early on Sunday morning belongs to Saturday night.
             </div>
           </div>
         </div>
@@ -304,12 +322,12 @@ export default function ServerDetail() {
                     <td>
                       <StatusChip state={event.outcome} />
                     </td>
-                    <td>{fmtDay(event.report_date)}</td>
+                    <td className="nowrap">{fmtNight(event.report_date)}</td>
                     <td className="muted">{event.source_name}</td>
                     <td className="muted">{event.job_name ?? "—"}</td>
                     <td className="muted">{event.result_raw ?? "—"}</td>
                     <td className="nowrap">
-                      {fmtTime(event.start_utc)}
+                      {fmtDayTime(event.start_utc)}
                       {differs && (
                         <span className="tz-pill alt" style={{ marginLeft: 6 }}>
                           {event.start_local} {city}
@@ -317,7 +335,7 @@ export default function ServerDetail() {
                       )}
                     </td>
                     <td className="nowrap">
-                      {fmtTime(event.end_utc)}
+                      {fmtDayTime(event.end_utc)}
                       {differs && (
                         <span className="tz-pill alt" style={{ marginLeft: 6 }}>
                           {event.end_local} {city}

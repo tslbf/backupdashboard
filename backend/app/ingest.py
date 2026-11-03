@@ -154,6 +154,18 @@ def existing_event_keys(session: Session) -> set[tuple[str, int, datetime]]:
     return {(source, server_id, to_second(start)) for source, server_id, start in rows}
 
 
+# A run cannot finish in the future. Cove reports whatever the device's clock
+# says, and one device came back with a last session in July 2027: stored, it
+# sorted to the top of its server page, became both "last run" and "last good
+# backup" ("0m ago"), and would have hidden every real night behind it. A day of
+# slack covers a box whose clock is merely a few hours off.
+FUTURE_TOLERANCE = timedelta(hours=24)
+
+
+def is_future(end_utc: datetime | None, now: datetime | None = None) -> bool:
+    return end_utc is not None and end_utc > (now or utcnow()) + FUTURE_TOLERANCE
+
+
 def upsert_event(
     session: Session,
     cache: ServerCache,
@@ -189,6 +201,19 @@ def upsert_event(
     backfill, where the per-row lookup is the whole cost of the run.
     """
     from .models import BackupEvent
+
+    if is_future(end_utc):
+        # Refused rather than stored and flagged: a run that has not happened
+        # yet is not evidence of anything, and the night it would land on does
+        # not exist. The server shows "No backup" instead, which is the truth,
+        # and this line in the log says why.
+        log.warning(
+            "%s: ignoring run on %s that finishes in the future (%s UTC) — check the device clock",
+            source,
+            server.name,
+            end_utc.isoformat(sep=" ", timespec="seconds"),
+        )
+        return False
 
     # Before truncating — the real duration, not the truncated one.
     if duration_sec is None and start_utc and end_utc:

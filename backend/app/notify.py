@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import smtplib
 from dataclasses import dataclass
+from datetime import date, timedelta
 from email.message import EmailMessage
 from html import escape
 
@@ -73,12 +74,13 @@ def build_digest(session: Session, settings: Settings | None = None, day: str | 
         headline = f"{len(problems)} need{'s' if len(problems) == 1 else ''} attention"
     else:
         headline = "all clear"
-    subject = f"{settings.notify_subject_prefix} {data['report_date']} — {headline}"
+    night = night_label(data["report_date"])
+    subject = f"{settings.notify_subject_prefix} {night} night — {headline}"
 
     # --- text ---------------------------------------------------------------
     lines = [
         f"{protected} of {total} servers protected" + (f" ({pct}%)" if pct is not None else ""),
-        f"Backup night of {data['report_date']}, noon to noon in each server's own timezone.",
+        f"Night of {night}, noon to noon in each server's own timezone.",
         "",
     ]
     if problems:
@@ -117,6 +119,21 @@ def build_digest(session: Session, settings: Settings | None = None, day: str | 
     )
 
 
+_DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def night_label(report_date: str) -> str:
+    """"Mon 2 Nov" for report date 2026-11-03.
+
+    A report date is keyed by the morning a night ends; people — and the
+    dashboard — name it by the evening it started. Built by hand, not with
+    `%a`/`%b`, which follow the Windows locale (same reason as `_arm_time`).
+    """
+    evening = date.fromisoformat(report_date) - timedelta(days=1)
+    return f"{_DAYS[evening.weekday()]} {evening.day} {_MONTHS[evening.month - 1]}"
+
+
 def _counts_line(counts: dict) -> str:
     return "  ".join(f"{key}={value}" for key, value in counts.items() if value)
 
@@ -145,8 +162,9 @@ def _html(data: dict, problems: list, never: list, stale: list, url: str) -> str
         'font-size:15px;color:#111;line-height:1.5">',
         f'<p style="font-size:26px;margin:0 0 2px;color:{tone}"><b>{protected}</b> '
         f'<span style="color:#666;font-size:18px">servers protected{pct}</span></p>',
-        f'<p style="margin:0 0 20px;color:#666;font-size:13px">Backup night of '
-        f'{escape(data["report_date"])} — noon to noon in each server\'s own timezone.</p>',
+        f'<p style="margin:0 0 20px;color:#666;font-size:13px">Night of '
+        f'{escape(night_label(data["report_date"]))} — noon to noon in each server\'s own '
+        f"timezone.</p>",
     ]
     if problems:
         body.append(

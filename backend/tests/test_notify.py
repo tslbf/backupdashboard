@@ -12,7 +12,7 @@ import pytest
 
 from app.api import SUMMARY_VERSION, summary
 from app.config import Settings
-from app.notify import build_digest, send_digest
+from app.notify import build_digest, night_label, send_digest
 from app.outcomes import FAILED, MISSED, SUCCESS
 from app.rollups import refresh_days, refresh_server_summaries
 from app.timeframes import current_report_date
@@ -62,7 +62,12 @@ class TestDigestContent:
 
         assert digest.report_date == TODAY.isoformat()
         assert "need" in digest.subject
-        assert TODAY.isoformat() in digest.subject
+        assert night_label(TODAY.isoformat()) in digest.subject
+
+    def test_the_night_is_named_by_its_evening(self):
+        """Report date 2026-11-03 is the night that began Monday evening."""
+        assert night_label("2026-11-03") == "Mon 2 Nov"
+        assert night_label("2026-01-01") == "Wed 31 Dec"
 
     def test_a_clean_night_says_so_in_the_subject(self, clean):
         """Read on a phone, the subject is often the whole message."""

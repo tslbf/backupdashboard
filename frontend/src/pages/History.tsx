@@ -14,7 +14,7 @@ import {
   StatusChip,
   chartCounts,
   chartLegend,
-  fmtDay,
+  fmtNight,
   fmtDuration,
   fmtTime,
   nfmt,
@@ -304,7 +304,7 @@ export default function History() {
                         setSelected(night.date);
                       }}
                     >
-                      {fmtDay(night.date)}
+                      {fmtNight(night.date)}
                     </a>
                     <div className="why">
                       {night.failed} failed · {night.missed} no backup
@@ -322,7 +322,7 @@ export default function History() {
         <div className="card flush" id="day">
           <div className="card-head" style={{ padding: "var(--space-7) var(--space-8) var(--space-4)" }}>
             <div>
-              <h2>{fmtDay(selected, { weekday: "long", month: "long", day: "numeric" })}</h2>
+              <h2>Night of {fmtNight(selected, { weekday: "long", month: "long", day: "numeric" })}</h2>
               <div className="card-hint">
                 {detail
                   ? `${detail.rows.length} server-source results on this night`
@@ -421,7 +421,7 @@ function TrendTable({
         <tbody>
           {[...rows].reverse().map((row) => (
             <tr key={row.date} className="clickable" onClick={() => onSelect(row.date)}>
-              <td>{fmtDay(row.date)}</td>
+              <td>{fmtNight(row.date)}</td>
               <td className="num">{row.success}</td>
               <td className="num">{row.warning}</td>
               <td className="num">{row.failed}</td>

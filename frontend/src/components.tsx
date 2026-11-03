@@ -233,6 +233,41 @@ export function fmtDateTime(value: string | null | undefined): string {
   return isNaN(d.getTime()) ? value : d.toLocaleString();
 }
 
+/** Day and time in the viewer's timezone — "Sat, Oct 31, 3:47 PM". A run's
+ *  date is not its night's label (a night spans two calendar days), so a row
+ *  that showed only the time left no way to tell Saturday evening from Sunday
+ *  morning. */
+export function fmtDayTime(value: string | null | undefined): string {
+  if (!value) return "—";
+  const d = parseUtc(value);
+  if (isNaN(d.getTime())) return value;
+  return d.toLocaleString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+/** Minutes `tz` is ahead of UTC at `at` (negative west of Greenwich). */
+export function zoneOffsetMinutes(tz: string, at: Date = new Date()): number {
+  const parts: Record<string, string> = {};
+  for (const p of new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).formatToParts(at)) {
+    parts[p.type] = p.value;
+  }
+  const wall = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute);
+  return Math.round((wall - Math.floor(at.getTime() / 60_000) * 60_000) / 60_000);
+}
+
 /** Time-of-day in the *viewer's* timezone. */
 export function fmtTime(value: string | null | undefined): string {
   if (!value) return "—";
@@ -255,6 +290,44 @@ export function fmtDay(value: string | null | undefined, opts?: Intl.DateTimeFor
 
 export function fmtDayShort(value: string): string {
   return fmtDay(value, { month: "numeric", day: "numeric" });
+}
+
+/** The evening a report date's night began on, as an ISO date.
+ *
+ *  Report dates are keyed by the morning a night *ends* (noon-to-noon, filed
+ *  under the second day) and that stays the key everywhere — API, URLs, the
+ *  database. But people name a night by its evening: the run at 7pm on
+ *  Saturday is "Saturday night", and labelling it "Sun, Nov 1" made every row
+ *  look a day late. So labels shift back one day; keys never do. */
+export function nightOf(reportDate: string): string {
+  return shiftIso(reportDate, -1);
+}
+
+/** Inverse of `nightOf`: the report date for a night starting on `evening`. */
+export function reportDateFor(evening: string): string {
+  return shiftIso(evening, 1);
+}
+
+export function shiftIso(value: string, days: number): string {
+  const [y, m, d] = value.split("-").map(Number);
+  if (!y || !m || !d) return value;
+  const next = new Date(y, m - 1, d + days, 12);
+  return `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}-${String(
+    next.getDate()
+  ).padStart(2, "0")}`;
+}
+
+/** A night's label, by the evening it started. Takes a *report date*. */
+export function fmtNight(
+  reportDate: string | null | undefined,
+  opts?: Intl.DateTimeFormatOptions
+): string {
+  if (!reportDate) return "—";
+  return fmtDay(nightOf(reportDate), opts);
+}
+
+export function fmtNightShort(reportDate: string): string {
+  return fmtNight(reportDate, { month: "numeric", day: "numeric" });
 }
 
 export function hoursSince(value: string | null | undefined): number | null {
@@ -656,7 +729,7 @@ export function ProblemColumns({
                 className="axis-text"
                 textAnchor="middle"
               >
-                {fmtDayShort(point.date)}
+                {fmtNightShort(point.date)}
               </text>
             ) : null
           )}
@@ -780,7 +853,7 @@ export function DayColumns({
                 className="axis-text"
                 textAnchor="middle"
               >
-                {fmtDayShort(point.date)}
+                {fmtNightShort(point.date)}
               </text>
             ) : null
           )}
@@ -796,7 +869,7 @@ function ColumnTip({ point }: { point: ColumnPoint }) {
   const rows = [...STACK_ORDER].reverse().filter((k) => point[k] > 0);
   return (
     <>
-      <div className="tip-title">{fmtDay(point.date)}</div>
+      <div className="tip-title">{fmtNight(point.date)}</div>
       {rows.map((key) => (
         <div className="tip-row" key={key}>
           <span className={`sq sw-${key}`} />
@@ -920,7 +993,7 @@ export function DurationChart({
                 className="axis-text"
                 textAnchor="middle"
               >
-                {fmtDayShort(point.date)}
+                {fmtNightShort(point.date)}
               </text>
             ) : null
           )}
@@ -932,7 +1005,7 @@ export function DurationChart({
           style={{ left: Math.min(xAt(hover!) + 12, Math.max(0, width - 150)), top: 4 }}
           role="status"
         >
-          <div className="tip-title">{fmtDay(active.date)}</div>
+          <div className="tip-title">{fmtNight(active.date)}</div>
           <div className="tip-row">
             <span className="sq" style={{ background: color }} />
             <span className="tip-label">{label}</span>
@@ -963,11 +1036,11 @@ export function HeatStrip({
           <button
             key={cell.date}
             className={`heat-cell sw-${m.cls}${cell.outcome ? "" : " no-data"}${on ? " on" : ""}`}
-            title={`${fmtDay(cell.date)} — ${m.label}${
+            title={`Night of ${fmtNight(cell.date)} — ${m.label}${
               cell.duration_sec != null ? ` (${fmtDuration(cell.duration_sec)})` : ""
             }${onSelect ? " · click to open" : ""}`}
             onClick={onSelect ? () => onSelect(cell.date) : undefined}
-            aria-label={`${cell.date}: ${m.label}`}
+            aria-label={`Night of ${fmtNight(cell.date)}: ${m.label}`}
             aria-pressed={onSelect ? on : undefined}
           />
         );

@@ -275,8 +275,28 @@ def refresh_all(session: Session) -> int:
     return total
 
 
+def drop_future_events(session: Session) -> int:
+    """Delete runs stamped in the future (see `ingest.FUTURE_TOLERANCE`).
+
+    `upsert_event` refuses them now; this clears the ones stored before it did.
+    """
+    from .ingest import FUTURE_TOLERANCE
+    from .timeframes import utcnow
+
+    horizon = utcnow() + FUTURE_TOLERANCE
+    count = (
+        session.query(BackupEvent)
+        .filter(BackupEvent.end_utc > horizon)
+        .delete(synchronize_session=False)
+    )
+    if count:
+        log.warning("removed %d run(s) with a finish time in the future", count)
+    return count
+
+
 def refresh_server_summaries(session: Session) -> None:
     """Recompute servers.last_event_utc / last_success_utc."""
+    drop_future_events(session)
     latest = dict(
         session.query(BackupEvent.server_id, func.max(BackupEvent.end_utc))
         .group_by(BackupEvent.server_id)

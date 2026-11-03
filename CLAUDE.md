@@ -44,6 +44,15 @@ test file and why the model is documented at length in `docs/timezones.md`.
 
 Related rules that are easy to undo by accident:
 
+- **Keyed by the morning, labelled by the evening.** `report_date` D is the
+  night that ends at noon on D, but every UI/digest label shows D-1 ("Tue, Oct
+  27" for a 23:00 Tuesday run) via `fmtNight` / `night_label`. Keys, URLs and
+  the API stay report dates; only labels shift. Run timestamps carry a date
+  (`fmtDayTime`) because a night spans two calendar days.
+- **A run cannot finish in the future.** `upsert_event` refuses anything ending
+  more than `FUTURE_TOLERANCE` (24h) ahead and logs it; `refresh_server_summaries`
+  deletes any stored before that rule. A Cove device reported a session in July
+  2027, which became "last run 0m ago" and topped its server page.
 - **`current_report_date` is the viewer's local calendar date**, deliberately
   *not* `report_date(now)`. The latter jumps "last night" forward to an empty
   future night every day at lunchtime. It rolls over at local midnight.

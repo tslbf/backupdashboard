@@ -16,6 +16,10 @@ import {
   chartLegend,
   countUp,
   fmtDay,
+  fmtNight,
+  nightOf,
+  reportDateFor,
+  shiftIso,
   fmtTime,
   nfmt,
   toColumnPoint,
@@ -154,12 +158,7 @@ export default function Overview() {
   }
 
   const shift = (days: number) => {
-    const [y, m, d] = data.report_date.split("-").map(Number);
-    const next = new Date(y, m - 1, d + days, 12);
-    const stamp = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}-${String(
-      next.getDate()
-    ).padStart(2, "0")}`;
-    setDate(stamp);
+    setDate(shiftIso(data.report_date, days));
   };
 
   const allClear = needsAttention === 0;
@@ -175,10 +174,12 @@ export default function Overview() {
             timezone
           </div>
           <h1>
-            {data.is_current ? "Last night" : fmtDay(data.report_date, { weekday: "long", month: "long", day: "numeric" })}
+            {data.is_current
+              ? "Last night"
+              : `${fmtNight(data.report_date, { weekday: "long", month: "long", day: "numeric" })} night`}
           </h1>
           <p className="subtitle">
-            {fmtDay(data.report_date, { weekday: "long", month: "long", day: "numeric" })} ·{" "}
+            Night of {fmtNight(data.report_date, { weekday: "long", month: "long", day: "numeric" })} ·{" "}
             {nfmt(data.servers_total)} servers · {nfmt(data.jobs_total)} jobs
           </p>
         </div>
@@ -192,9 +193,11 @@ export default function Overview() {
           <label className="date-pick" title="Jump to a night">
             <input
               type="date"
-              value={data.report_date}
-              max={meta.current_report_date}
-              onChange={(e) => setDate(e.target.value || null)}
+              value={nightOf(data.report_date)}
+              max={nightOf(meta.current_report_date)}
+              // The picker speaks evenings, like every label; the API speaks
+              // report dates, which are the morning after.
+              onChange={(e) => setDate(e.target.value ? reportDateFor(e.target.value) : null)}
             />
           </label>
           <button

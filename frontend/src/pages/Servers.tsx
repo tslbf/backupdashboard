@@ -13,7 +13,7 @@ import {
   ageLabel,
   chartCounts,
   chartLegend,
-  fmtDay,
+  fmtNight,
   nfmt,
   useSidebar,
   useSort,
@@ -307,7 +307,7 @@ export default function Servers() {
                     Last {days} nights
                     <span className="meta" style={{ marginLeft: 8 }}>
                       {data.dates.length
-                        ? `${fmtDay(data.dates[0], { month: "numeric", day: "numeric" })} → ${fmtDay(
+                        ? `${fmtNight(data.dates[0], { month: "numeric", day: "numeric" })} → ${fmtNight(
                             data.dates[data.dates.length - 1],
                             { month: "numeric", day: "numeric" }
                           )}`
