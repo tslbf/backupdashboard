@@ -323,3 +323,43 @@ def test_the_default_is_to_skip_log_backups():
     """Anyone who wants them can have them; nobody should get 23,000 rows they
     did not ask for on a first run."""
     assert get_settings().azure_include_log_backups is False
+
+
+def test_a_job_still_running_is_named_in_the_log(session, monkeypatch, caplog):
+    """A new server's first full backup can run for a day. Until it ends there
+    is nothing to file — but "the app isn't pulling it in" should be answerable
+    from the log, not by reading the code."""
+    now = utcnow()
+    running = job("NEWVM01", now - timedelta(hours=3), kind="AzureIaasVM", status="InProgress")
+    running["properties"]["endTime"] = None
+    done = job("VM01", now - timedelta(hours=8), kind="AzureIaasVM")
+
+    def fake_pages(self, client, url, label=""):
+        yield [running, done]
+
+    monkeypatch.setattr(AzureCollector, "_iter_pages", fake_pages)
+    with caplog.at_level("INFO"):
+        stored = AzureCollector()._collect_vault(
+            session, httpx.Client(), ServerCache(session, "azure"),
+            "sub", "rg", "vault", now - timedelta(hours=96), now,
+        )
+
+    assert stored == 1
+    assert "still running" in caplog.text and "NEWVM01" in caplog.text
+
+
+def test_subscriptions_left_out_by_config_are_named(monkeypatch, caplog):
+    collector = AzureCollector()
+    visible = [
+        {"subscriptionId": "a", "displayName": "Prod"},
+        {"subscriptionId": "b", "displayName": "NewOne"},
+    ]
+    monkeypatch.setattr(AzureCollector, "_pages", lambda self, client, url, label="": visible)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "azure_subscriptions", "Prod")
+
+    with caplog.at_level("INFO"):
+        chosen = collector._subscriptions(httpx.Client(), settings)
+
+    assert [s["displayName"] for s in chosen] == ["Prod"]
+    assert "NewOne" in caplog.text

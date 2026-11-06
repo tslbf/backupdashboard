@@ -346,6 +346,30 @@ test is to **run the same probe from the machine the PowerShell script runs
 on**. Working there and not here makes it the network path, not the code — and
 the fix is to extend that host's firewall rule to this one.
 
+**A server is backed up in Azure but never appears here**
+Nothing in the app filters Azure servers by name — if a job reaches the
+collector, the server is created. So the job is not reaching it. Ask ARM directly:
+
+```bat
+.venv\Scripts\python.exe -m app.cli probe azure --hours 96 --find NEWVM01 NEWVM02
+```
+
+It lists every subscription the service principal can see (and whether
+`AZURE_SUBSCRIPTIONS` is excluding it), every vault, and the latest job for each
+name, in every visible subscription. The usual answers:
+
+- **The vault is not in the list.** The principal has no role on the new vault,
+  resource group or subscription, and ARM hides it rather than refusing. Grant
+  it the same role it has on the existing vaults.
+- **`NOT collected`.** The servers went into a subscription that
+  `AZURE_SUBSCRIPTIONS` doesn't name. Add it, or clear the setting to collect
+  everything visible.
+- **`(still running)`.** A first full backup can run for a day or more, and a run
+  is filed by the night it *ends*. The collector now names these in the live log.
+- **Nothing at all.** Check the name, widen `--hours`, and check it is a
+  Recovery Services vault — disk and blob backups live in Backup vaults
+  (`Microsoft.DataProtection`), which this app does not read.
+
 **Azure runs for many minutes, or the record count runs into the tens of thousands**
 Sixty servers should produce a few hundred jobs in a 96-hour window, not 30,000.
 See what is actually in the vaults, without storing any of it:

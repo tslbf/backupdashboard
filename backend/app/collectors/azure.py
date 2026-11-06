@@ -255,6 +255,15 @@ class AzureCollector(Collector):
         }
         if missing:
             log.warning("azure: configured subscriptions not visible: %s", ", ".join(sorted(missing)))
+        # The quiet way to lose new servers: they went into a subscription this
+        # list doesn't name, and nothing about that is an error.
+        excluded = [s.get("displayName") or s.get("subscriptionId") for s in everything if s not in chosen]
+        if excluded:
+            log.info(
+                "azure: skipping %s subscription(s) not in AZURE_SUBSCRIPTIONS: %s",
+                len(excluded),
+                ", ".join(sorted(str(x) for x in excluded)),
+            )
         return chosen
 
     def _collect_vault(
@@ -274,6 +283,7 @@ class AzureCollector(Collector):
         skipped = 0
         logs = 0
         stale = 0
+        running: set[str] = set()
         returned = 0
         seen_in_window = False
         stale_pages = 0
@@ -293,6 +303,13 @@ class AzureCollector(Collector):
                         continue
                     start = parse_dt(properties.get("startTime"))
                     end = parse_dt(properties.get("endTime"))
+                    if start is not None and end is None and start <= to_utc:
+                        # Still in progress: nothing to file yet, because a run is
+                        # filed by the night it *ended*. A new server's first full
+                        # backup can run for a day or more, and until it finishes
+                        # this is the only trace of it — so name it.
+                        running.add(str(properties.get("entityFriendlyName") or "?"))
+                        continue
                     if start is None or end is None:
                         continue
                     # Enforced here as well as in the filter, because ARM will
@@ -382,6 +399,12 @@ class AzureCollector(Collector):
             f", {stale} outside the window" if stale else "",
             f", {skipped} with no usable server name" if skipped else "",
         )
+        if running:
+            log.info(
+                "azure %s: still running, not stored until they finish: %s",
+                vault,
+                ", ".join(sorted(running)),
+            )
         if stale > count:
             log.warning(
                 "azure %s: %s of %s jobs were outside the %sh window — ARM is ignoring "
@@ -426,7 +449,7 @@ class AzureCollector(Collector):
         )
 
 
-def survey(settings: Settings, hours: int) -> list[dict]:
+def survey(settings: Settings, hours: int, find: list[str] | None = None) -> list[dict]:
     """Read-only: what is actually in those vaults, without storing any of it.
 
     A collection that returns tens of thousands of records for sixty servers is
@@ -442,7 +465,19 @@ def survey(settings: Settings, hours: int) -> list[dict]:
 
     with httpx.Client(timeout=120) as client:
         client.headers["Authorization"] = f"Bearer {collector._token(client, settings)}"
-        for subscription in collector._subscriptions(client, settings):
+        visible = collector._pages(client, f"{ARM}/subscriptions?api-version={SUBSCRIPTIONS_API}")
+        chosen = collector._subscriptions(client, settings)
+        for subscription in visible:
+            out.append(
+                {
+                    "subscription_seen": subscription.get("displayName")
+                    or subscription.get("subscriptionId"),
+                    "collected": subscription in chosen,
+                }
+            )
+        # With --find, search every subscription the principal can see — the
+        # question is often "is it in one we're not collecting?"
+        for subscription in visible if find else chosen:
             sub_id = subscription.get("subscriptionId")
             if not sub_id:
                 continue
@@ -469,6 +504,7 @@ def survey(settings: Settings, hours: int) -> list[dict]:
                 kinds: dict[str, int] = {}
                 operations: dict[str, int] = {}
                 entities: set[str] = set()
+                latest: dict[str, dict] = {}
                 outside = 0
                 for job in jobs:
                     properties = job.get("properties") or {}
@@ -484,12 +520,25 @@ def survey(settings: Settings, hours: int) -> list[dict]:
                     if properties.get("entityFriendlyName"):
                         entities.add(str(properties["entityFriendlyName"]))
                     start = parse_dt(properties.get("startTime"))
+                    entity = str(properties.get("entityFriendlyName") or "")
+                    if find and any(f.lower() in entity.lower() for f in find):
+                        previous = latest.get(entity)
+                        if previous is None or (start and start > previous["start"]):
+                            latest[entity] = {
+                                "start": start or datetime.min,
+                                "operation": operation,
+                                "status": properties.get("status"),
+                                "type": properties.get("backupManagementType"),
+                                "end": properties.get("endTime"),
+                            }
                     if start is not None and start < from_utc:
                         outside += 1
                 out.append(
                     {
                         "vault": name,
                         "subscription": subscription.get("displayName") or sub_id,
+                        "collected": subscription in chosen,
+                        "matches": latest,
                         "jobs": len(jobs),
                         "entities": len(entities),
                         "outside_window": outside,

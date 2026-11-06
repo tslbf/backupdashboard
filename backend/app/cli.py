@@ -11,6 +11,7 @@
   python -m app.cli purge <source>     delete one source's events
   python -m app.cli protect            encrypt a secret for .env (Windows DPAPI)
   python -m app.cli probe veeam        diagnose a Veeam connection (TCP/TLS/HTTP)
+  python -m app.cli probe azure [--find NAME ...]  survey vaults / find a server
   python -m app.cli notify [--print]   send the morning digest (or just show it)
 """
 from __future__ import annotations
@@ -44,6 +45,12 @@ def main() -> int:
         "--hours", type=int, default=24, help="azure: window to survey (default 24)"
     )
     probe.add_argument(
+        "--find",
+        nargs="+",
+        metavar="NAME",
+        help="azure: look for these servers in every visible subscription and vault",
+    )
+    probe.add_argument(
         "--port",
         type=int,
         help="veeam: override the port (9419 is the VBR REST API, 9398 Enterprise Manager)",
@@ -74,7 +81,7 @@ def main() -> int:
     if args.command == "protect":
         return _protect(args)
     if args.command == "probe":
-        return _probe_veeam(args.port) if args.target == "veeam" else _probe_azure(args.hours)
+        return _probe_veeam(args.port) if args.target == "veeam" else _probe_azure(args.hours, args.find)
 
     init_db()
 
@@ -345,7 +352,7 @@ def _probe_veeam(port: int | None = None) -> int:
     return worst
 
 
-def _probe_azure(hours: int) -> int:
+def _probe_azure(hours: int, find: list[str] | None = None) -> int:
     """What is in the vaults, without storing any of it.
 
     Sixty servers should not produce tens of thousands of job records. This says
@@ -362,7 +369,46 @@ def _probe_azure(hours: int) -> int:
         return 1
 
     print(f"\nSurveying the last {hours}h. Nothing is written to the database.")
-    for vault in survey(settings, hours):
+    results = survey(settings, hours, find)
+    print("\nSubscriptions this service principal can see:")
+    for row in results:
+        if "subscription_seen" in row:
+            flag = "collected" if row["collected"] else "NOT collected (not in AZURE_SUBSCRIPTIONS)"
+            print(f"  {row['subscription_seen']:<40} {flag}")
+    vaults = [row for row in results if "vault" in row]
+
+    if find:
+        print(f"\nLooking for: {', '.join(find)}")
+        print(f"Vaults visible: {', '.join(v['vault'] for v in vaults) or '(none)'}")
+        found = False
+        for vault in vaults:
+            for entity, info in sorted((vault.get("matches") or {}).items()):
+                found = True
+                where = "" if vault.get("collected") else "   <- subscription NOT collected"
+                print(
+                    f"  {entity}  in vault {vault['vault']} ({vault['subscription']}){where}\n"
+                    f"      latest: {info['operation']} {info['status']}  type {info['type']}"
+                    f"  started {info['start']:%Y-%m-%d %H:%M} UTC"
+                    f"  ended {info['end'] or '(still running)'}"
+                )
+        for vault in vaults:
+            if vault.get("error"):
+                print(f"  vault {vault['vault']} unreadable: {vault['error']}")
+        if not found:
+            print(
+                f"\n  No job in the last {hours}h names any of those. Either:\n"
+                "  - its vault isn't in the list above: the service principal has no\n"
+                "    Reader on that vault / resource group / subscription, so ARM hides it\n"
+                "    without an error. Grant the same role it has on the existing vaults.\n"
+                "  - it is protected but has not run a backup in the window: try --hours 96.\n"
+                "  - it is in a Backup vault (Microsoft.DataProtection — disks, blobs), not a\n"
+                "    Recovery Services vault. This app only reads Recovery Services vaults.\n"
+                "  - the name differs: try a shorter fragment of it."
+            )
+        print()
+        return 0 if found else 1
+
+    for vault in vaults:
         print(f"\n=== {vault['vault']} ===")
         if vault.get("error"):
             print(f"  unreadable: {vault['error']}")
