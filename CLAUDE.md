@@ -361,6 +361,16 @@ pages, demo data, 89 passing tests, `update-and-run.cmd`.
   It sends on a clean night too by default: an email that only arrives when
   something is wrong is indistinguishable from a mail system that has died,
   which is this app's own thesis applied to itself.
+- **Collector health is its own alert** (`health.py`). A broken Veeam collector
+  shows as every Veeam server reading "No backup", and a broken Cove one shows
+  nothing at all (`CURRENT_STATE_SOURCES`), so neither looks like what it is.
+  Four verdicts: `error`, `partial` (some hosts/logs failed — recorded as its
+  own run status via `PartialCollection`, never as `success`), `stale` (no
+  success within the schedule — catches a dead scheduler), `empty` (succeeded
+  with 0 records). The digest subject and an Overview banner lead with it, and
+  `run_collector` emails once on the transition into failure
+  (`NOTIFY_COLLECTOR_FAILURES`); the 08:00 run passes `alert=False` because its
+  digest follows a minute later.
 - httpx logs one INFO line per request, which drowned the panel during Azure's
   pagination — it is pinned to WARNING in `main.py`. `HTTP_LOG_LEVEL=INFO`
   restores per-request lines for debugging.

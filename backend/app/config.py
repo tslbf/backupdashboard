@@ -145,6 +145,9 @@ class Settings(BaseSettings):
     notify_when: str = "daily"
     # Prefix for the subject line, so a mail rule can catch it.
     notify_subject_prefix: str = "Backups"
+    # Email once, immediately, when a collector goes from working to failing
+    # (outside the 08:00 run, whose digest already reports it).
+    notify_collector_failures: bool = True
     # The URL that reaches this dashboard from a reader's desk. Blank derives it
     # from the machine's own hostname, because "localhost" in an email is a link
     # that works only for the one person who does not need it.

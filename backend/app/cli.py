@@ -155,7 +155,7 @@ def _collect(args) -> int:
         return 1
     failed = False
     for collector in targets:
-        run = run_collector(collector)
+        run = run_collector(collector, alert=False)  # you are watching it
         print(f"{collector.source}: {run.status} ({run.records} records) {run.message or ''}")
         failed = failed or run.status != "success"
     return 1 if failed else 0

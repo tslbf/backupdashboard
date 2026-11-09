@@ -51,7 +51,9 @@ export default function Collectors() {
                 ? "success"
                 : r.last_run?.status === "error"
                   ? "failed"
-                  : "other",
+                  : r.last_run?.status === "partial"
+                    ? "warning"
+                    : "other",
           })),
         }
       : null
@@ -98,7 +100,9 @@ export default function Collectors() {
                 ? "success"
                 : row.last_run?.status === "error"
                   ? "failed"
-                  : row.last_run?.status === "running"
+                  : row.last_run?.status === "partial"
+                    ? "warning"
+                    : row.last_run?.status === "running"
                     ? "running"
                     : "unknown";
             return (
@@ -192,7 +196,9 @@ export default function Collectors() {
                             ? "success"
                             : r.status === "error"
                               ? "failed"
-                              : "running"
+                              : r.status === "partial"
+                                ? "warning"
+                                : "running"
                         }
                         label={r.status === "error" ? "error" : r.status}
                       />

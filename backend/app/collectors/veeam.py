@@ -27,7 +27,7 @@ from ..config import Settings
 from ..ingest import ServerCache, upsert_event
 from ..outcomes import normalize
 from ..timeframes import utcnow
-from .base import Collector
+from .base import Collector, PartialCollection
 
 log = logging.getLogger(__name__)
 
@@ -360,6 +360,60 @@ def _session_result(session_row: dict) -> str | None:
     return session_row.get("status")
 
 
+def failure_hint(exc: BaseException, settings: Settings) -> str:
+    """One line on where to look, keyed on what actually went wrong.
+
+    Each of these has a misleading surface: a reset says nothing about TLS, and
+    a 401 from the token endpoint looks the same whether the password changed
+    or the account was locked out by someone else's typo.
+    """
+    text = str(exc).lower()
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        url = str(exc.request.url)
+        if "oauth2/token" in url and status in (400, 401):
+            return (
+                " — Veeam rejected the login. Has the VEEAM_USERNAME account's password "
+                "changed or expired, or is the account locked out? Re-run `python -m "
+                "app.cli protect` if the password is DPAPI-encrypted in .env."
+            )
+        if status == 403:
+            return (
+                " — logged in but not allowed. The account needs at least the Veeam "
+                "Backup Viewer role on this VBR server."
+            )
+        if status == 400 and "x-api-version" in (exc.response.text or "").lower():
+            return (
+                f" — the server does not accept x-api-version {settings.veeam_api_version}; "
+                "a VBR upgrade or downgrade changes this. Set VEEAM_API_VERSION to one "
+                "the server lists (e.g. 1.1-rev2, 1.2-rev0)."
+            )
+        if status == 404:
+            return " — endpoint not found. Is this a VBR v11+ server on the REST port (9419)?"
+        if status >= 500:
+            return " — the VBR server errored. Check the Veeam.Backup.RestAPI service on it."
+    if "10054" in text or "forcibly closed" in text or isinstance(exc, ssl.SSLError):
+        return (
+            " — the server hung up during the handshake. It is currently offered only "
+            f"TLS {settings.veeam_tls_version}. Run `python -m app.cli probe veeam`, which "
+            f"tries every protocol version against port {settings.veeam_port}."
+        )
+    if isinstance(exc, (httpx.ConnectTimeout, TimeoutError, socket_timeout)):
+        return (
+            " — timed out connecting. A firewall is dropping the traffic, or the "
+            "server is down; `python -m app.cli probe veeam` tells which."
+        )
+    if isinstance(exc, httpx.ConnectError):
+        if "getaddrinfo" in text or "name or service" in text or "11001" in text:
+            return " — the hostname does not resolve. Check VEEAM_SERVERS and DNS."
+        if "refused" in text or "10061" in text:
+            return (
+                " — connection refused: nothing is listening on that port. Is the "
+                "Veeam RESTful API service running on the VBR server?"
+            )
+    return ""
+
+
 class VeeamCollector(Collector):
     source = "veeam"
     display_name = "Veeam"
@@ -374,29 +428,28 @@ class VeeamCollector(Collector):
         since = utcnow() - timedelta(hours=settings.veeam_lookback_hours)
         total = 0
         failures: list[str] = []
+        self._log_failures = 0
 
         for host in settings.veeam_server_list():
             try:
                 total += self._collect_host(session, settings, cache, host, since)
             except Exception as exc:  # noqa: BLE001
                 # One unreachable VBR server must not cost us the other's data.
-                hint = ""
-                if "10054" in str(exc) or "forcibly closed" in str(exc).lower():
-                    hint = (
-                        " — the server hung up. That is usually TLS: it is currently "
-                        f"offering only TLS {settings.veeam_tls_version}. Run "
-                        "`python -m app.cli probe veeam`, which tries every protocol "
-                        "version against port "
-                        f"{settings.veeam_port} and names the one this appliance accepts."
-                    )
+                hint = failure_hint(exc, settings)
                 log.error("veeam host %s failed: %s%s", host, exc, hint)
-                failures.append(f"{host}: {exc}{hint}")
+                failures.append(f"{host}: {type(exc).__name__}: {exc}{hint}")
 
         session.commit()
         if failures and total == 0:
             raise RuntimeError("; ".join(failures))
         if failures:
-            log.warning("veeam partial collection, failed hosts: %s", "; ".join(failures))
+            raise PartialCollection(total, "some VBR hosts failed — " + "; ".join(failures))
+        if self._log_failures:
+            raise PartialCollection(
+                total,
+                f"{self._log_failures} session log(s) could not be read, so those "
+                "sessions' machines were not recorded — see the log for the HTTP error",
+            )
         return total
 
     def _collect_host(
@@ -484,6 +537,7 @@ class VeeamCollector(Collector):
             log_items = self._fetch_logs(client, session_id)
         except httpx.HTTPError as exc:
             log.warning("veeam logs failed for session %s: %s", session_id, exc)
+            self._log_failures = getattr(self, "_log_failures", 0) + 1
             return 0
 
         job_name = row.get("name")

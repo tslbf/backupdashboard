@@ -35,6 +35,13 @@ const TREND_DAYS = 30;
  *  PROBLEM_OUTCOMES — the same three that feed the needs-attention count. */
 const PROBLEMS = new Set(["failed", "missed", "warning"]);
 
+const KIND_LABEL: Record<string, string> = {
+  error: "failing",
+  partial: "partly failing",
+  stale: "not run recently",
+  empty: "returning no data",
+};
+
 export default function Overview() {
   const p = useIntro();
   const [meta, setMeta] = useState<Meta | null>(null);
@@ -217,6 +224,19 @@ export default function Overview() {
           <LiveToggle on={live} onToggle={() => setLive((v) => !v)} />
         </div>
       </div>
+
+      {data.collector_problems?.length > 0 && (
+        <div className="error-box collector-alert" role="alert">
+          <b>✕ Collector problem</b> — the figures below are incomplete
+          {data.collector_problems.map((c) => (
+            <div key={c.source} className="collector-alert-row">
+              <b>{c.display_name}</b>: {KIND_LABEL[c.kind] ?? c.kind}
+              {c.since && <> since {new Date(c.since).toLocaleString()}</>} — {c.message}
+            </div>
+          ))}
+          <Link to="/collectors">Open Collectors →</Link>
+        </div>
+      )}
 
       {/* ---------- what happened last night ----------
           The hero is the count that is *working*, not the count that is broken.

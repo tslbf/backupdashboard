@@ -75,6 +75,17 @@ export interface Overview {
       days: number | null;
     }[];
   };
+  /** Configured collectors that are not doing their job. Non-empty means the
+   *  rest of this payload is incomplete. */
+  collector_problems: CollectorProblem[];
+}
+
+export interface CollectorProblem {
+  source: string;
+  display_name: string;
+  kind: "error" | "partial" | "stale" | "empty";
+  message: string;
+  since: string | null;
 }
 
 export interface TrendPoint extends Counts {

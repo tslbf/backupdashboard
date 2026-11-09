@@ -900,6 +900,9 @@ tr.picked > td { background: var(--tint-hover); }
   padding: var(--space-4) var(--space-6);
   font-size: var(--text-body);
 }
+.collector-alert { margin-bottom: var(--card-gap); line-height: 1.55; }
+.collector-alert-row { margin-top: var(--space-2); color: var(--color-neutral-200); overflow-wrap: anywhere; }
+.collector-alert a { display: inline-block; margin-top: var(--space-3); color: var(--o-failed-fg); }
 .warn-banner {
   background: var(--o-warning-fill);
   border: 1px solid var(--color-warn-lo);

@@ -9,6 +9,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .collectors import ALL_COLLECTORS, run_collector
+from .health import collector_health
 from .config import get_settings
 from .db import get_session
 from .ingest import effective_cutoff, effective_timezone, restamp_server, timezone_origin
@@ -372,6 +373,9 @@ def overview(
             )
         ],
         "attention": _attention(session, config, settings, day),
+        # A broken collector makes every number above incomplete, usually as a
+        # wall of "No backup" — so the page has to say which kind of red it is.
+        "collector_problems": collector_health(session, settings),
     }
 
 
@@ -984,7 +988,7 @@ def trigger_collector(source: str, background: BackgroundTasks):
     collector = ALL_COLLECTORS.get(source)
     if collector is None:
         raise HTTPException(status_code=404, detail="unknown source")
-    background.add_task(run_collector, collector)
+    background.add_task(run_collector, collector, alert=False)  # someone clicked it
     return {"queued": source}
 
 

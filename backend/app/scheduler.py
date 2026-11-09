@@ -38,7 +38,8 @@ def _morning_run(collectors: list) -> None:
     still lets the others report and the digest still goes out; it just says so.
     """
     for collector in collectors:
-        run_collector(collector)
+        # No immediate alert: the digest below leads with any failure.
+        run_collector(collector, alert=False)
 
     _nightly_job()
 

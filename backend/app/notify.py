@@ -45,10 +45,11 @@ class Digest:
     html: str
     problem_count: int
     report_date: str
+    collector_problem_count: int = 0
 
     @property
     def worth_sending(self) -> bool:
-        return self.problem_count > 0
+        return self.problem_count > 0 or self.collector_problem_count > 0
 
 
 def build_digest(session: Session, settings: Settings | None = None, day: str | None = None) -> Digest:
@@ -59,9 +60,11 @@ def build_digest(session: Session, settings: Settings | None = None, day: str | 
     is the kind of discrepancy that destroys trust in both.
     """
     from .api import overview
+    from .health import collector_problems
 
     settings = settings or get_settings()
     data = overview(date_param=day, session=session)
+    broken = collector_problems(session, settings)
 
     protected = data["servers_protected"]
     total = data["servers_total"]
@@ -74,6 +77,11 @@ def build_digest(session: Session, settings: Settings | None = None, day: str | 
         headline = f"{len(problems)} need{'s' if len(problems) == 1 else ''} attention"
     else:
         headline = "all clear"
+    if broken:
+        # First in the subject: a broken collector makes every other number in
+        # the email wrong, usually as a wall of "No backup" for its servers.
+        names = ", ".join(dict.fromkeys(p.display_name for p in broken))
+        headline = f"{names} collector {'is' if len(broken) == 1 else 'are'} failing — {headline}"
     night = night_label(data["report_date"])
     subject = f"{settings.notify_subject_prefix} {night} night — {headline}"
 
@@ -83,6 +91,13 @@ def build_digest(session: Session, settings: Settings | None = None, day: str | 
         f"Night of {night}, noon to noon in each server's own timezone.",
         "",
     ]
+    if broken:
+        lines.append(f"COLLECTOR PROBLEMS ({len(broken)}) — the numbers below are incomplete")
+        for problem in broken:
+            since = f" since {_fmt_since(problem.since)}" if problem.since else ""
+            lines.append(f"  {problem.display_name}: {problem.kind}{since}")
+            lines.append(f"    {problem.message}")
+        lines.append("")
     if problems:
         width = max(len(p["server"]) for p in problems)
         lines.append(f"NEEDS ATTENTION ({len(problems)})")
@@ -113,10 +128,16 @@ def build_digest(session: Session, settings: Settings | None = None, day: str | 
     return Digest(
         subject=subject,
         text="\n".join(lines),
-        html=_html(data, problems, never, stale, settings.public_url()),
+        html=_html(data, problems, never, stale, settings.public_url(), broken),
         problem_count=len(problems),
         report_date=data["report_date"],
+        collector_problem_count=len(broken),
     )
+
+
+def _fmt_since(when) -> str:
+    """UTC, labelled — the digest has no way to know the reader's timezone."""
+    return when.strftime("%Y-%m-%d %H:%M UTC")
 
 
 _DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
@@ -138,7 +159,9 @@ def _counts_line(counts: dict) -> str:
     return "  ".join(f"{key}={value}" for key, value in counts.items() if value)
 
 
-def _html(data: dict, problems: list, never: list, stale: list, url: str) -> str:
+def _html(
+    data: dict, problems: list, never: list, stale: list, url: str, broken: list | None = None
+) -> str:
     """Deliberately plain. Inline styles, a light ground, no fonts to fetch —
     a mail client is not a browser and half of them will strip anything else."""
     protected = f"{data['servers_protected']} of {data['servers_total']}"
@@ -166,6 +189,19 @@ def _html(data: dict, problems: list, never: list, stale: list, url: str) -> str
         f'{escape(night_label(data["report_date"]))} — noon to noon in each server\'s own '
         f"timezone.</p>",
     ]
+    if broken:
+        items = "".join(
+            f'<li style="margin:4px 0"><b>{escape(p.display_name)}</b>: {escape(p.kind)}'
+            + (f" since {escape(_fmt_since(p.since))}" if p.since else "")
+            + f'<br><span style="color:#555">{escape(p.message)}</span></li>'
+            for p in broken
+        )
+        body.append(
+            '<div style="border:2px solid #c0271b;padding:10px 14px;margin:0 0 22px">'
+            '<p style="margin:0 0 4px;color:#c0271b;font-weight:600">Collector problems — '
+            "the numbers below are incomplete</p>"
+            f'<ul style="margin:0;padding-left:20px;font-size:14px">{items}</ul></div>'
+        )
     if problems:
         body.append(
             f'<h3 style="margin:0 0 6px;font-size:14px;text-transform:uppercase;'
@@ -226,12 +262,21 @@ def send_digest(digest: Digest, settings: Settings | None = None) -> bool:
         log.info("digest not sent: clean night and NOTIFY_WHEN=problems")
         return False
 
+    _deliver(settings, digest.subject, digest.text, digest.html)
+    log.info(
+        "digest sent to %s — %s", ", ".join(settings.notify_recipients()), digest.subject
+    )
+    return True
+
+
+def _deliver(settings: Settings, subject: str, text: str, html: str | None = None) -> None:
     message = EmailMessage()
-    message["Subject"] = digest.subject
+    message["Subject"] = subject
     message["From"] = settings.notify_sender()
     message["To"] = ", ".join(settings.notify_recipients())
-    message.set_content(digest.text)
-    message.add_alternative(digest.html, subtype="html")
+    message.set_content(text)
+    if html:
+        message.add_alternative(html, subtype="html")
 
     if settings.smtp_ssl:
         server = smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=30)
@@ -246,9 +291,36 @@ def send_digest(digest: Digest, settings: Settings | None = None) -> bool:
     finally:
         server.quit()
 
-    log.info(
-        "digest sent to %s — %s", ", ".join(settings.notify_recipients()), digest.subject
+
+def send_collector_alert(display_name: str, status: str, message: str) -> bool:
+    """Email the moment a collector starts failing — outside the morning run.
+
+    The caller only invokes this on the transition from working to failing, so
+    a source that stays broken sends one of these and is then carried by the
+    daily digest. Never raises, for the same reason as the digest.
+    """
+    settings = get_settings()
+    if not settings.notify_configured() or not settings.notify_collector_failures:
+        return False
+    word = "failed" if status == "error" else "partly failed"
+    subject = f"{settings.notify_subject_prefix} — {display_name} collector {word}"
+    text = "\n".join(
+        [
+            f"The {display_name} collector {word} and its data on the dashboard is now "
+            "incomplete. Servers it covers may show as \"No backup\" until it is fixed.",
+            "",
+            message,
+            "",
+            "You will get this once; the morning digest repeats it until it recovers.",
+            f"Collectors page: {settings.public_url()}/collectors",
+        ]
     )
+    try:
+        _deliver(settings, subject, text)
+    except Exception as exc:  # noqa: BLE001
+        log.error("collector alert failed to send: %s", exc)
+        return False
+    log.info("collector alert sent — %s", subject)
     return True
 
 
