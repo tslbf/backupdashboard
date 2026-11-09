@@ -218,3 +218,21 @@ class TestFailureHints:
     def test_the_reset_hint_is_kept(self):
         hint = failure_hint(ConnectionResetError("[WinError 10054] forcibly closed"), cfg())
         assert "probe veeam" in hint
+
+
+class TestLoginBody:
+    def test_veeams_reason_is_kept(self, session, monkeypatch):
+        def handler(request):
+            return httpx.Response(401, json={"errorCode": "Unauthorized", "message": "MFA required"})
+
+        real = httpx.Client
+
+        def client(*args, **kwargs):
+            kwargs.pop("verify", None)
+            return real(*args, transport=httpx.MockTransport(handler), **kwargs)
+
+        monkeypatch.setattr("app.collectors.veeam.httpx.Client", client)
+        with pytest.raises(RuntimeError) as caught:
+            VeeamCollector().collect(session, cfg(veeam_servers="vbr1"))
+        assert "MFA required" in str(caught.value)
+        assert "rejected the login" in str(caught.value)

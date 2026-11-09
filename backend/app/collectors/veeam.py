@@ -478,7 +478,15 @@ class VeeamCollector(Collector):
                 },
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
-            token_resp.raise_for_status()
+            if token_resp.is_error:
+                # Veeam says *why* in the body (bad password, MFA required, no
+                # role); raise_for_status throws that away and keeps only "401".
+                body = " ".join((token_resp.text or "").split())[:400]
+                raise httpx.HTTPStatusError(
+                    f"login returned HTTP {token_resp.status_code}: {body or '(empty body)'}",
+                    request=token_resp.request,
+                    response=token_resp,
+                )
             client.headers["Authorization"] = f"Bearer {token_resp.json()['access_token']}"
 
             count = 0
